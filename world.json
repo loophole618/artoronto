@@ -1,0 +1,17 @@
+{
+  "_note": "Shared world for every ARToronto client (iOS, web probe, server). Locations are PLACEHOLDERS until the test site is chosen.",
+  "version": 1,
+  "spheres": [
+    {
+      "id": "anahata",
+      "name": "Anāhata",
+      "lat": 43.6561,
+      "lon": -79.3803,
+      "altitude_above_ground_m": 1.6,
+      "radius_m": 0.5,
+      "color": "#33D973",
+      "pulse_bpm": 72,
+      "_placeholder": "Yonge-Dundas Square, approximate"
+    }
+  ]
+}

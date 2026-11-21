@@ -1,0 +1,65 @@
+# Builds the iOS app WITHOUT signing and uploads an .ipa.
+# Signing happens on David's PC with Sideloadly and a free Apple ID,
+# so no Apple credentials ever live in this public repo.
+name: iOS build (unsigned .ipa)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned, device)
+        run: |
+          LABEL="${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          echo "LABEL=$LABEL" >> "$GITHUB_ENV"
+          xcodebuild build \
+            -project Artoronto.xcodeproj \
+            -scheme HelloAR \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            ART_BUILD_LABEL="$LABEL"
+
+      - name: Package .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/HelloAR.app Payload/
+          zip -qry "ARToronto-HelloAR-${LABEL}.ipa" Payload
+          ls -lh *.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ARToronto-HelloAR-${{ env.LABEL }}
+          path: ios/*.ipa
+          retention-days: 30

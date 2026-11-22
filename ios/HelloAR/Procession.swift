@@ -16,6 +16,13 @@ final class Procession {
     var speed: Float = 0.9
 
     var length: Float { cum.last ?? 0 }
+
+    var start: (point: SIMD3<Float>, direction: SIMD3<Float>)? {
+        guard path.count > 1 else { return nil }
+        var d = point(at: 0.5) - path[0]
+        d.y = 0
+        return simd_length(d) > 1e-4 ? (path[0], simd_normalize(d)) : nil
+    }
     var figureCount: Int { figures.count }
 
     func setPath(_ points: [SIMD3<Float>]) {

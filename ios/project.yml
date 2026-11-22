@@ -10,11 +10,20 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+packages:
+  MetalSplatter:
+    url: https://github.com/scier/MetalSplatter
+    exactVersion: 1.0.1
 targets:
   HelloAR:
     type: application
     platform: iOS
     sources: [HelloAR]
+    dependencies:
+      - package: MetalSplatter
+        product: MetalSplatter
+      - package: MetalSplatter
+        product: SplatIO
     scheme: {}
     info:
       path: HelloAR/Info.plist

@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 final class AppState: ObservableObject {
     enum Mode: String, CaseIterable { case street = "STREET", body = "BODY" }
-    enum Pick { case site, avatar }
+    enum Pick { case site, avatar, splat }
 
     @Published var mode = Mode.street
     @Published var panelOpen = true
@@ -61,6 +61,9 @@ final class AppState: ObservableObject {
     let figure = BlockFigure()
     let walker = Walker()
     let look = LookClient()
+    let splat = SplatProbe()
+    @Published var splatText = ""
+    @Published var splatVisible = true
     weak var arView: ARView?
     var siteFile: SiteFile?
     var forgetWalk = false
@@ -109,15 +112,20 @@ struct ContentView: View {
             guard case .success(let url) = result else { return }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let saved = state.pick == .site ? Self.savedSite : Self.savedAvatar
+            let saved = state.pick == .site ? Self.savedSite : (state.pick == .avatar ? Self.savedAvatar : Self.savedSplat)
             try? FileManager.default.removeItem(at: saved)
             let from = (try? FileManager.default.copyItem(at: url, to: saved)) != nil ? saved : url
-            if state.pick == .site { loadSite(from: from) } else { loadAvatar(from: from, label: url.lastPathComponent) }
+            switch state.pick {
+            case .site: loadSite(from: from)
+            case .avatar: loadAvatar(from: from, label: url.lastPathComponent)
+            case .splat: state.splat.load(url: from, label: url.lastPathComponent)
+            }
         }
         .onAppear {
             let fm = FileManager.default
             if fm.fileExists(atPath: Self.savedAvatar.path) { loadAvatar(from: Self.savedAvatar, label: "last avatar") }
             if fm.fileExists(atPath: Self.savedSite.path) { loadSite(from: Self.savedSite) }
+            if fm.fileExists(atPath: Self.savedSplat.path) { state.splat.load(url: Self.savedSplat, label: "last splat") }
         }
     }
 
@@ -183,6 +191,9 @@ struct ContentView: View {
             Divider()
             Button("Load site…") { state.pick = .site; state.picking = true }
             Button("Load avatar…") { state.pick = .avatar; state.picking = true }
+            Button("Load splat…") { state.pick = .splat; state.picking = true }
+            Button("Place splat here") { state.splat.replace() }
+            Toggle("Splat visible", isOn: $state.splatVisible)
             Button("Reset nudge") { state.placer.resetNudge() }
         } label: {
             Text("☰ \(state.mode.rawValue)")
@@ -206,6 +217,7 @@ struct ContentView: View {
                 Text(ARBodyTrackingConfiguration.isSupported ? "body: \(state.body)" : "body tracking not supported on this phone")
             }
             Text("avatar: \(state.avatar)")
+            if !state.splatText.isEmpty { Text("splat: \(state.splatText)") }
             Text("ARToronto · build \(BuildInfo.label)")
         }
         .font(.system(size: 10, design: .monospaced))
@@ -231,7 +243,7 @@ struct ContentView: View {
          "caterpillar": "\(state.trailCount) · \(streetText)", "follower": "\(state.follower)",
          "body": state.body, "placement": state.placement.rawValue, "size": "\(state.size)",
          "occlude": "\(state.occlude)", "wear": "\(state.wear)", "avatar": state.avatar,
-         "walk": state.walkText, "occlusion": state.occlusion,
+         "walk": state.walkText, "occlusion": state.occlusion, "splat": state.splatText,
          "build": BuildInfo.label]
     }
 
@@ -250,6 +262,7 @@ struct ContentView: View {
     private static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
     private static var savedSite: URL { documents.appendingPathComponent("site.json") }
     private static var savedAvatar: URL { documents.appendingPathComponent("avatar.gltf") }
+    private static var savedSplat: URL { documents.appendingPathComponent("probe.splat") }
 
     private func loadSite(from url: URL) {
         do {
@@ -306,6 +319,9 @@ struct ARViewContainer: UIViewRepresentable {
             c.loadWalk()
         }
         state.placer.onOcclusion = { text in DispatchQueue.main.async { state.occlusion = text } }
+        state.splat.arView = arView
+        state.splat.onStatus = { text in DispatchQueue.main.async { state.splatText = text } }
+        arView.renderCallbacks.postProcess = { ctx in state.splat.postProcess(ctx) }
         state.placer.arView = arView
         state.placer.onNudged = { [weak arView] in
             arView?.snapshot(saveToHDR: false) { image in
@@ -426,12 +442,39 @@ struct ARViewContainer: UIViewRepresentable {
             caterpillar.update(time: time, deltaTime: dt)
             updateProcession(dt: Float(dt))
             state.placer.nudgeTick(camera: cam)
+            state.splat.visible = state.splatVisible
+            if state.splat.needsPlacement { placeSplat(camera: cam) }
 
             if state.follower, let pose = walker.step(dt: Float(dt), camera: cam) {
                 figure.update(walker: pose.joints, headMatrix: pose.head)
             } else if !state.follower {
                 figure.root.isEnabled = false
             }
+        }
+
+        private var splatAnchor: AnchorEntity?
+
+        private func placeSplat(camera cam: SIMD3<Float>) {
+            guard let arView, let frame = arView.session.currentFrame else { return }
+            let holder = state.splat.holder
+            holder.removeFromParent()
+            if let a = splatAnchor { arView.scene.removeAnchor(a); splatAnchor = nil }
+            if let start = procession.start, procession.root.parent != nil {
+                procession.root.addChild(holder)
+                holder.position = start.point
+                holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: start.direction)
+            } else {
+                var fwd = -SIMD3<Float>(frame.camera.transform.columns.2.x, 0, frame.camera.transform.columns.2.z)
+                fwd = simd_length(fwd) > 1e-4 ? simd_normalize(fwd) : SIMD3(0, 0, -1)
+                var p = cam + fwd * 2.5
+                p.y = floorBelow(cam)
+                let a = AnchorEntity(world: p)
+                arView.scene.addAnchor(a)
+                a.addChild(holder)
+                holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: -fwd)
+                splatAnchor = a
+            }
+            state.splat.placed()
         }
 
         private func walkKey() -> String { "walk:" + (state.siteFile?.name ?? "") }

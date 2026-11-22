@@ -26,6 +26,8 @@ final class ARStatus: ObservableObject {
     @Published var site = "none (SITE ⇩ to pick a site file)"
     @Published var pickingSite = false
     let placer = SitePlacer()
+    let look = LookClient()
+    weak var arView: ARView?
 }
 
 struct ContentView: View {
@@ -69,6 +71,9 @@ struct ContentView: View {
                     }
                 }
 
+                LookBar(look: status.look, app: "artoronto", info: lookInfo) { done in
+                    if let v = status.arView { v.snapshot(saveToHDR: false) { done($0) } } else { done(nil) }
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("ARToronto · hello AR").font(.headline)
                     Text("tracking: \(status.tracking)")
@@ -111,6 +116,13 @@ struct ContentView: View {
         }
     }
 
+    private func lookInfo() -> [String: String] {
+        ["tracking": status.tracking,
+         "caterpillar": "\(status.trailCount) · \(stateText)",
+         "site": status.site,
+         "build": BuildInfo.label]
+    }
+
     private var stateText: String {
         if status.trailing { return "growing \(status.lastChakra)" }
         if status.crawling { return "crawling" }
@@ -128,6 +140,7 @@ struct ARViewContainer: UIViewRepresentable {
         let arView = ARView(frame: .zero)
         let coordinator = context.coordinator
         coordinator.arView = arView
+        status.arView = arView
 
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.horizontal]

@@ -309,12 +309,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         let config = ARGeoTrackingConfiguration()
         config.planeDetection = [.horizontal]
         let people = ARGeoTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth)
-        var mesh = false
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
-            config.sceneReconstruction = .mesh
-            mesh = true
-        }
-        addOcclusion(config, people: people, mesh: mesh)
+        addOcclusion(config, people: people, mesh: false)
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         onRestart?()
         let ga = ARGeoAnchor(coordinate: site.centre)

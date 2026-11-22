@@ -22,6 +22,8 @@ final class Dragon {
     private let torso = Entity()
     private let headPivot = Entity()
     private let mouth = Entity()
+    private let jawPivot = Entity()
+    let voice = FirepearlVoice()
     private var eyes: [Entity] = []
     private var tail: [ModelEntity] = []
     private var tailSteps: [Float] = []
@@ -78,6 +80,32 @@ final class Dragon {
     private var lastLeader: SIMD3<Float>?
     private var leaderSpeed: Float = 0
 
+    // petting, voice, hearts
+    private var happy: Float = 0
+    private var petting: Float = 0
+    private var squint: Float = 0
+    private var rolling: Float = 0
+    private var rollTimer: Float = 0
+    private var hopY: Float = 0
+    private var hopV: Float = 0
+    private var jaw: Float = 0
+    private var tailPhase: Float = 0
+    private var heartCarry: Float = 0
+    private var helloTimer: Float = -1
+    private var nextChat: Float = 30
+    private var wasFlying = false
+    private var wasBreathing = false
+    private var lastPetTalk: Float = -100
+    private var camera = SIMD3<Float>(0, 0, 0)
+    private final class Heart {
+        let entity: Entity
+        var age: Float = 9
+        var drift: Float = 0
+        init(_ e: Entity) { entity = e }
+    }
+    private var hearts: [Heart] = []
+    private static let heartLife: Float = 1.6
+
     init() {
         root.addChild(mover)
         mover.addChild(torso)
@@ -91,6 +119,8 @@ final class Dragon {
         lastLeader = nil
         root.isEnabled = false
         for puff in puffs { puff.age = 9; puff.entity.isEnabled = false }
+        for h in hearts { h.age = 9; h.entity.isEnabled = false }
+        voice.purr(0)
     }
 
     // MARK: - building
@@ -174,8 +204,12 @@ final class Dragon {
         add(ball, orange, to: headPivot, at: SIMD3<Float>(0, 0.02, 0.03), scale: SIMD3<Float>(0.062, 0.055, 0.065))
         add(.generateBox(width: 0.07, height: 0.045, depth: 0.075, cornerRadius: 0.02), orange,
             to: headPivot, at: SIMD3<Float>(0, 0.002, 0.09))
+        jawPivot.position = SIMD3<Float>(0, -0.012, 0.06)
+        headPivot.addChild(jawPivot)
         add(.generateBox(width: 0.058, height: 0.018, depth: 0.065, cornerRadius: 0.008), cream,
-            to: headPivot, at: SIMD3<Float>(0, -0.021, 0.088))
+            to: jawPivot, at: SIMD3<Float>(0, -0.009, 0.028))
+        add(ball, Self.paint(0.45, 0.05, 0.08, glow: 0.1), to: headPivot, at: SIMD3<Float>(0, -0.016, 0.085),
+            scale: SIMD3<Float>(0.026, 0.009, 0.038))
         for s in [Float(-1), 1] {
             add(ball, black, to: headPivot, at: SIMD3<Float>(0.017 * s, 0.02, 0.126), scale: SIMD3<Float>(repeating: 0.0055))
 
@@ -258,6 +292,17 @@ final class Dragon {
             root.addChild(e)
             puffs.append(Puff(e))
         }
+        let pink = Self.paint(1.0, 0.35, 0.6, glow: 0.8, rough: 0.3)
+        for _ in 0..<12 {
+            let h = Entity()
+            for sx in [Float(-1), 1] {
+                add(ball, pink, to: h, at: SIMD3<Float>(0.32 * sx, 0.18, 0), scale: SIMD3<Float>(0.4, 0.4, 0.22))
+            }
+            add(cone, pink, to: h, at: SIMD3<Float>(0, -0.2, 0), scale: SIMD3<Float>(1.15, 0.85, 0.44), turn: Self.rx(.pi))
+            h.isEnabled = false
+            root.addChild(h)
+            hearts.append(Heart(h))
+        }
     }
 
     /// Outline of the dragon's left wing (+x), root front â†’ wrist â†’ three finger tips with scalloped skin â†’ root back.
@@ -329,11 +374,13 @@ final class Dragon {
                 viewer: SIMD3<Float>?, camera: SIMD3<Float>, cameraForward: SIMD3<Float>, fire: Bool) {
         guard mode != .off else {
             if root.isEnabled { reset() }
+            voice.purr(0)
             status = "off"
             return
         }
         let dt = Self.clamp(rawDt, 0, 0.05)
         time += dt
+        self.camera = camera
         root.isEnabled = true
         let floorY = leaderFloor.y
 
@@ -350,6 +397,8 @@ final class Dragon {
             walkTime = 0
             circling = false
             placed = true
+            helloTimer = 1.8
+            rollTimer = 0; rolling = 0; happy = 0; petting = 0
         }
 
         recordTrail(leaderFloor)
@@ -381,6 +430,25 @@ final class Dragon {
             }
         case .off: break
         }
+
+        // petting: she stops for scratches; enough of them and she rolls over for a belly rub
+        petting = max(0, petting - 1.5 * dt)
+        happy = max(0, happy - 0.04 * dt)
+        let petted = petting > 0.05
+        if petted && mode != .fly { wantsFly = false; flyTimer = 0 }
+        squint += ((petted ? 1 : 0) - squint) * min(1, 5 * dt)
+        if happy > 0.85 && rollTimer <= 0 && rolling < 0.05 && flight < 0.05 {
+            rollTimer = 4
+            voice.say(.roll)
+            voice.giggle()
+            for _ in 0..<3 { spawnHeart() }
+        }
+        if rollTimer > 0 {
+            if petted { rollTimer = max(rollTimer, 1.5) }
+            rollTimer -= dt
+            if rollTimer <= 0 { happy = 0.45 }
+        }
+        rolling += ((rollTimer > 0 ? 1 : 0) - rolling) * min(1, 3 * dt)
 
         // where to be
         var target = p
@@ -421,6 +489,8 @@ final class Dragon {
             target.y = floorY
         }
 
+        if (petted || rollTimer > 0) && !wantsFly { target = SIMD3<Float>(p.x, floorY, p.z) }
+
         // a damped spring toward the target
         let k: Float = wantsFly ? 2.4 : 3.2
         v += ((target - p) * (k * k) - v * (2 * k)) * dt
@@ -436,7 +506,12 @@ final class Dragon {
         flight += ((wantsFly || height > 0.03 ? 1 : 0) - flight) * min(1, 6 * dt)
         let hs = simd_length(SIMD2<Float>(v.x, v.z))
         walkAmount += (min(hs / 0.5, 1) * (1 - flight) - walkAmount) * min(1, 8 * dt)
-        gait += hs * dt / Self.stride * 2 * .pi
+        gait += hs * dt / Self.stride * 2 * .pi + rolling * 7 * dt
+        if hopV != 0 || hopY > 0 {
+            hopV -= 9.8 * dt
+            hopY += hopV * dt
+            if hopY <= 0 { hopY = 0; hopV = 0 }
+        }
         flap += dt * 2 * .pi * (3.2 + 1.5 * max(0, v.y))
 
         // heading, bank, pitch
@@ -458,21 +533,25 @@ final class Dragon {
         let bob = 0.006 * walkAmount * abs(sinf(gait)) - 0.02 * flight * sinf(flap) + 0.003 * sinf(1.6 * time)
         mover.position = p
         mover.orientation = Self.ry(yaw) * Self.rx(pitch) * Self.rz(bank)
-        torso.position = SIMD3<Float>(0, Self.standHeight + bob, 0)
+        let roll = rolling * rolling * (3 - 2 * rolling)
+        torso.position = SIMD3<Float>(0, Self.standHeight + bob + (0.095 - Self.standHeight) * roll + hopY, 0)
+        torso.orientation = Self.rz(Float.pi * roll)
 
         poseLegs()
         poseWings()
         poseTail()
         poseHead(lookAt: viewer ?? leaderHead, dt: dt)
         fireAndStatus(fire: fire, moving: moving, mode: mode, dt: dt)
+        talkAndHearts(moving: moving, dt: dt)
     }
 
     private func poseLegs() {
         let fb = flight
         for leg in legs {
             let ph = gait + leg.phase
-            var th = leg.rest.x + 0.5 * walkAmount * sinf(ph)
-            var kn = leg.rest.y + 0.9 * walkAmount * max(0, -cosf(ph))
+            let amount = max(walkAmount, 0.7 * rolling)
+            var th = leg.rest.x + 0.5 * amount * sinf(ph)
+            var kn = leg.rest.y + 0.9 * amount * max(0, -cosf(ph))
             let tuck = leg.front ? SIMD2<Float>(-0.7, 1.6) : SIMD2<Float>(0.9 + 0.1 * sinf(flap), 0.4)
             th += (tuck.x - th) * fb
             kn += (tuck.y - kn) * fb
@@ -485,7 +564,7 @@ final class Dragon {
     private func poseWings() {
         let fb = flight
         let foldedRoll: Float = 0.6 + 0.04 * sinf(2.3 * time)
-        let roll = foldedRoll + (0.25 + 0.8 * sinf(flap) - foldedRoll) * fb
+        let roll = foldedRoll + (0.25 + 0.8 * sinf(flap) - foldedRoll) * fb + 0.12 * squint * sinf(22 * time)
         let sweep = 0.9 + (0.15 - 0.9) * fb
         let open = 0.45 + 0.55 * fb
         for w in wings {
@@ -496,14 +575,14 @@ final class Dragon {
 
     private func poseTail() {
         let fb = flight
-        let sway = (0.5 + 0.5 * (1 - walkAmount)) * (1 - 0.6 * fb)
+        let sway = (0.5 + 0.5 * (1 - walkAmount)) * (1 - 0.6 * fb) + 0.6 * happy + 0.4 * squint
         var yawA: Float = 0
         var pitA: Float = -0.3 + 0.25 * fb
         var q = SIMD3<Float>(0, -0.005, -0.125)
         var dir = SIMD3<Float>(0, 0, -1)
         for k in 0..<tail.count {
             let kf = Float(k)
-            yawA += sway * 0.22 * sinf(2.2 * time - 0.55 * kf)
+            yawA += sway * 0.22 * sinf(tailPhase - 0.55 * kf)
             pitA += (k > 4 ? 0.13 : 0.02) * (1 - fb) + 0.06 * sinf(flap - 0.6 * kf) * fb
             dir = SIMD3<Float>(sinf(yawA) * cosf(pitA), sinf(pitA), -cosf(yawA) * cosf(pitA))
             q += dir * tailSteps[k]
@@ -529,9 +608,14 @@ final class Dragon {
         var hy = Self.clamp(atan2f(lx, lz), -1.0, 1.0) * weight
         var hp = Self.clamp(-atan2f(d.y, hypotf(lx, lz)), -0.8, 0.6) * weight - pitch
         if breath > 0 { hy *= 0.3; hp = -0.25 }
+        hp -= 0.35 * squint
         headYaw += (hy - headYaw) * min(1, 6 * dt)
         headPitch += (hp - headPitch) * min(1, 6 * dt)
-        headPivot.orientation = Self.ry(headYaw) * Self.rx(headPitch)
+        headPivot.orientation = Self.ry(headYaw) * Self.rx(headPitch) * Self.rz(0.3 * squint * sinf(1.3 * time))
+        tailPhase += dt * (2.2 + 5 * squint + 3 * happy)
+        let jawWant: Float = breath > 0 ? 0.9 : (voice.speaking ? 0.35 + 0.35 * abs(sinf(16 * time)) : 0)
+        jaw += (jawWant - jaw) * min(1, 12 * dt)
+        jawPivot.orientation = Self.rx(0.5 * jaw)
     }
 
     private func fireAndStatus(fire: Bool, moving: Bool, mode: Mode, dt: Float) {
@@ -539,7 +623,7 @@ final class Dragon {
         if nextBlink <= 0 { blink = 0.14; nextBlink = Float.random(in: 2.5...5.5) }
         let lid: Float = blink > 0 ? 0.1 : 1
         blink -= dt
-        for e in eyes { e.scale = SIMD3<Float>(1, lid, 1) }
+        for e in eyes { e.scale = SIMD3<Float>(1, min(lid, 1 - 0.7 * squint), 1) }
 
         if fire { breath = 0.9 }
         if !moving && !wantsFly && flight < 0.05 { idleTime += dt } else { idleTime = 0 }
@@ -569,10 +653,83 @@ final class Dragon {
         }
 
         if breath > 0 { status = "breathing fire!" }
+        else if rolling > 0.5 { status = "rolling over for belly rubs!" }
+        else if squint > 0.5 { status = "loves the scratches" }
         else if wantsFly { status = circling ? "circling over your head" : "flying over you" }
         else if flight > 0.05 { status = "landing" }
         else if walkAmount > 0.2 { status = "walking behind you" }
         else { status = "sitting near you" }
+    }
+
+    // MARK: - petting and talking
+
+    /// The point touches are tested against, in world space; nil while she is hidden.
+    func touchCentre() -> SIMD3<Float>? {
+        guard root.isEnabled, placed else { return nil }
+        return mover.convert(position: SIMD3<Float>(0, 0.2, 0.06), to: nil)
+    }
+
+    /// A stroke across her; amount is roughly how far the finger moved, in dragon-widths.
+    func pet(_ amount: Float) {
+        petting = min(1, petting + amount * 0.6)
+        happy = min(1, happy + amount * 0.05)
+        if happy > 0.15 && time - lastPetTalk > 6 {
+            lastPetTalk = time
+            voice.say(.pet)
+        }
+    }
+
+    /// A tap on the nose: a little hop and a giggle.
+    func boop() {
+        if hopY == 0 && flight < 0.05 { hopV = 1.1 }
+        happy = min(1, happy + 0.1)
+        voice.giggle()
+        if Bool.random() { voice.say(.boop) }
+        spawnHeart()
+    }
+
+    private func talkAndHearts(moving: Bool, dt: Float) {
+        voice.purr(min(1, squint * 1.2 + rolling * 0.6))
+        if helloTimer > 0 {
+            helloTimer -= dt
+            if helloTimer <= 0 { voice.chirp(); voice.say(.hello) }
+        }
+        if breath > 0 && !wasBreathing { voice.whoosh() }
+        if breath <= 0 && wasBreathing && Float.random(in: 0...1) < 0.4 { voice.say(.fire) }
+        wasBreathing = breath > 0
+        if wantsFly && !wasFlying {
+            voice.trill()
+            if Float.random(in: 0...1) < 0.6 { voice.say(.takeoff) }
+        }
+        if !wantsFly && wasFlying && Float.random(in: 0...1) < 0.4 { voice.say(.land) }
+        wasFlying = wantsFly
+        nextChat -= dt
+        if nextChat <= 0 && squint < 0.1 {
+            nextChat = Float.random(in: 25...50)
+            if moving && !wantsFly { voice.say(.follow) } else if !wantsFly { voice.say(.idle) }
+        }
+
+        heartCarry += dt * 2.5 * squint
+        while heartCarry >= 1 { heartCarry -= 1; spawnHeart() }
+        for h in hearts where h.age < Self.heartLife {
+            h.age += dt
+            guard h.age < Self.heartLife else { h.entity.isEnabled = false; continue }
+            let u = h.age / Self.heartLife
+            h.entity.position += SIMD3<Float>(0.06 * h.drift * cosf(6 * h.age), 0.22, 0) * dt
+            let size: Float = 0.035 * min(1, u / 0.12) * (u > 0.7 ? (1 - u) / 0.3 : 1)
+            h.entity.scale = SIMD3<Float>(repeating: max(size, 0.0001))
+            let to = camera - h.entity.position
+            h.entity.orientation = Self.ry(atan2f(to.x, to.z))
+        }
+    }
+
+    private func spawnHeart() {
+        guard let h = hearts.first(where: { $0.age >= Self.heartLife }) else { return }
+        h.age = 0
+        h.drift = Float.random(in: -1...1)
+        h.entity.position = headPivot.convert(position: SIMD3<Float>(0, 0.08, 0.02), to: root)
+        h.entity.scale = SIMD3<Float>(repeating: 0.0001)
+        h.entity.isEnabled = true
     }
 
     private func emitPuff() {

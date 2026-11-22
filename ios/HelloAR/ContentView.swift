@@ -74,6 +74,12 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(dragonMode.rawValue, forKey: "dragonMode") }
     }
     @Published var dragonText = ""
+    @Published var dragonTalks = UserDefaults.standard.object(forKey: "dragonTalks") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(dragonTalks, forKey: "dragonTalks") }
+    }
+    @Published var dragonSounds = UserDefaults.standard.object(forKey: "dragonSounds") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(dragonSounds, forKey: "dragonSounds") }
+    }
     var fireRequests = 0
     weak var arView: ARView?
     var siteFile: SiteFile?
@@ -191,6 +197,8 @@ struct ContentView: View {
                     ForEach(Dragon.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 Button("Breathe fire 🔥") { state.fireRequests += 1 }
+                Toggle("Talks", isOn: $state.dragonTalks)
+                Toggle("Purrs and chirps", isOn: $state.dragonSounds)
             }
             Menu("Splat") {
                 Button("Place splat here") { state.splat.replace() }
@@ -373,6 +381,9 @@ struct ARViewContainer: UIViewRepresentable {
         }
         let tap = UITapGestureRecognizer(target: c, action: #selector(Coordinator.handleTap(_:)))
         arView.addGestureRecognizer(tap)
+        let stroke = UIPanGestureRecognizer(target: c, action: #selector(Coordinator.handleStroke(_:)))
+        stroke.maximumNumberOfTouches = 1
+        arView.addGestureRecognizer(stroke)
         return arView
     }
 
@@ -511,6 +522,8 @@ struct ARViewContainer: UIViewRepresentable {
                 if time - floorCache.at > 0.3 { floorCache = (floorBelow(cam), time) }
                 leaderFloor = SIMD3(cam.x, floorCache.y, cam.z); leaderHead = cam; viewer = nil
             }
+            state.dragon.voice.talks = state.dragonTalks
+            state.dragon.voice.sounds = state.dragonSounds
             state.dragon.update(dt: dt, mode: state.dragonMode, leaderFloor: leaderFloor, leaderHead: leaderHead,
                                 viewer: viewer, camera: cam, cameraForward: fwd, fire: fire)
             let text = state.dragon.status
@@ -679,8 +692,40 @@ struct ARViewContainer: UIViewRepresentable {
             DispatchQueue.main.async { if self.state.tracking != text { self.state.tracking = text } }
         }
 
+        /// Is this screen point on Firepearl? Tested against a circle about her body, sized by her distance.
+        private func touchesDragon(_ pt: CGPoint) -> Bool {
+            guard let arView, let c = state.dragon.touchCentre(), let cam = arView.session.currentFrame?.camera else { return false }
+            let right = SIMD3<Float>(cam.transform.columns.0.x, cam.transform.columns.0.y, cam.transform.columns.0.z)
+            guard let a = arView.project(c), let b = arView.project(c + right * 0.24) else { return false }
+            let r = max(hypot(b.x - a.x, b.y - a.y), 36)
+            return hypot(pt.x - a.x, pt.y - a.y) < r
+        }
+
+        private var lastStroke: CGPoint?
+
+        @objc func handleStroke(_ g: UIPanGestureRecognizer) {
+            guard let arView else { return }
+            let pt = g.location(in: arView)
+            switch g.state {
+            case .began:
+                lastStroke = pt
+            case .changed:
+                if let last = lastStroke, touchesDragon(pt) {
+                    state.dragon.pet(Float(hypot(pt.x - last.x, pt.y - last.y)) / 120)
+                }
+                lastStroke = pt
+            default:
+                lastStroke = nil
+            }
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard let arView, mode == .street else { return }
+            guard let arView else { return }
+            if !state.placer.nudging, touchesDragon(gesture.location(in: arView)) {
+                state.dragon.boop()
+                return
+            }
+            guard mode == .street else { return }
             if state.placer.nudging {
                 let p = gesture.location(in: arView)
                 guard let r0 = arView.ray(through: p),

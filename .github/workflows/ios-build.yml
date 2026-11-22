@@ -35,6 +35,9 @@ jobs:
         run: xcodegen generate
 
       - name: Build (unsigned, device)
+        env:
+          # Firepearl's chat server (a repo secret, so it is not in the code).
+          SKY_SERVER: ${{ secrets.SKY_SERVER }}
         run: |
           LABEL="${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
           echo "LABEL=$LABEL" >> "$GITHUB_ENV"
@@ -49,7 +52,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
-            ART_BUILD_LABEL="$LABEL"
+            ART_BUILD_LABEL="$LABEL" \
+            ART_SKY_SERVER="$SKY_SERVER"
 
       - name: Package .ipa
         run: |

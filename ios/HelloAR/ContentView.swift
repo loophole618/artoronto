@@ -339,7 +339,7 @@ struct ContentView: View {
     private static var savedSplat: URL { documents.appendingPathComponent("probe.splat") }
 
     private func openSkyConnect() {
-        skyAddress = state.sky.server
+        skyAddress = state.sky.server.isEmpty ? SkyLink.builtInServer : state.sky.server
         skyPin = ""
         state.skyConnectOpen = true
     }

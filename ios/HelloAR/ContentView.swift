@@ -112,12 +112,17 @@ struct ContentView: View {
                         }
                     } else { done(nil) }
                 }
-                Button { state.panelOpen.toggle() } label: {
-                    Image(systemName: state.panelOpen ? "chevron.down" : "slider.horizontal.3")
-                        .font(.system(size: 17, weight: .bold))
-                        .frame(width: 44, height: 44)
-                        .foregroundStyle(.white)
-                        .background(.black.opacity(0.45), in: Circle())
+                HStack(spacing: 8) {
+                    if !state.panelOpen && state.dragonMode != .off {
+                        TalkButton(sky: state.sky, compact: true, begin: beginTalk, end: endTalk)
+                    }
+                    Button { state.panelOpen.toggle() } label: {
+                        Image(systemName: state.panelOpen ? "chevron.down" : "slider.horizontal.3")
+                            .font(.system(size: 17, weight: .bold))
+                            .frame(width: 44, height: 44)
+                            .foregroundStyle(.white)
+                            .background(.black.opacity(0.45), in: Circle())
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -932,6 +937,7 @@ struct LoupeView: View {
 /// Hold to talk to Firepearl; her mind (Sky) answers through her voice.
 struct TalkButton: View {
     @ObservedObject var sky: SkyLink
+    var compact = false
     let begin: () -> Void
     let end: () -> Void
 
@@ -947,7 +953,7 @@ struct TalkButton: View {
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { _ in if !sky.listening && !sky.busy { begin() } }
                     .onEnded { _ in end() })
-            if !sky.status.isEmpty {
+            if !compact && !sky.status.isEmpty {
                 Text(sky.status)
                     .font(.system(size: 10, design: .monospaced))
                     .lineLimit(2)
@@ -958,6 +964,11 @@ struct TalkButton: View {
     }
 
     private var label: String {
+        if compact {
+            if sky.listening { return "👂 LISTENING…" }
+            if sky.busy { return "💭 THINKING…" }
+            return "🎤 FIREPEARL"
+        }
         if sky.listening { return "👂 LISTENING… let go to send" }
         if sky.busy { return "💭 FIREPEARL IS THINKING…" }
         return sky.connected ? "🎤 HOLD TO TALK TO FIREPEARL" : "🎤 CONNECT FIREPEARL TO SKY"

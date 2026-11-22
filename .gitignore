@@ -7,3 +7,6 @@ ios/Payload/
 
 .DS_Store
 xcuserdata/
+
+# Field-test photos: private (homes, faces, streets). Kept locally, never pushed.
+field-tests/

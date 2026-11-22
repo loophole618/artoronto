@@ -229,6 +229,17 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         let s = (bb * e - d) / denom, t = (e - bb * d) / denom
         let p1 = o1 + d1 * s, p2 = o2 + d2 * t
         let real = anchor.convert(position: (p1 + p2) / 2, from: nil)
+        let walked = simd_distance(o1, o2)
+        guard walked >= 1.5 else {
+            onStatus?(String(format: "NUDGE: you moved only %.1f m between taps; walk 3-5 m along the house and start again", walked))
+            nudging = false
+            return
+        }
+        guard s > 3, t > 3, real.y > 4, real.y < 20 else {
+            onStatus?(String(format: "NUDGE: the sight lines meet %.1f m up, %.1f / %.1f m away; that's not the peak, start again", real.y, s, t))
+            nudging = false
+            return
+        }
         let predicted = SiteModel.benchmarkPosition(site, b) + offset
         offset.x += real.x - predicted.x
         offset.z += real.z - predicted.z

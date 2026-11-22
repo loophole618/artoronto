@@ -1,7 +1,9 @@
-// LOOK / LIVE: send the AR view and readings to the studio receiver over Wi-Fi.
+// LOOK / LIVE / voice: send the AR view and readings to the studio receiver over Wi-Fi.
 import SwiftUI
 import Network
 import UIKit
+import Speech
+import AVFoundation
 
 final class LookClient: ObservableObject {
     @Published var state = "looking for the studio on Wi-Fi…"
@@ -20,11 +22,13 @@ final class LookClient: ObservableObject {
         browser.start(queue: .main)
     }
 
-    func send(kind: String, app: String, note: String, info: [String: String], image: UIImage?, maxWidth: CGFloat) {
+    func send(kind: String, app: String, note: String, info: [String: String], image: UIImage?, maxWidth: CGFloat,
+              extra: [String: Any] = [:]) {
         guard let endpoint else { state = "studio not found on this Wi-Fi"; return }
         var body: [String: Any] = ["kind": kind, "app": app, "note": note, "info": info,
                                    "time": ISO8601DateFormatter().string(from: Date())]
-        if let image, let jpg = Self.shrink(image, maxWidth: maxWidth).jpegData(compressionQuality: kind == "look" ? 0.8 : 0.5) {
+        for (k, v) in extra { body[k] = v }
+        if let image, let jpg = Self.shrink(image, maxWidth: maxWidth).jpegData(compressionQuality: kind == "look" ? 0.8 : 0.6) {
             body["jpeg"] = jpg.base64EncodedString()
         }
         guard let json = try? JSONSerialization.data(withJSONObject: body) else { return }
@@ -41,7 +45,9 @@ final class LookClient: ObservableObject {
             conn.receive(minimumIncompleteLength: 1, maximumLength: 1024) { data, _, _, _ in
                 let ok = data.flatMap { String(data: $0, encoding: .utf8) }?.contains(" 200 ") ?? false
                 let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
-                DispatchQueue.main.async { self?.state = ok ? "\(kind) sent \(time) ✓" : "studio didn't accept it" }
+                if kind != "live" {
+                    DispatchQueue.main.async { self?.state = ok ? "\(kind) sent \(time) ✓" : "studio didn't accept it" }
+                }
                 conn.cancel()
             }
         })
@@ -56,19 +62,95 @@ final class LookClient: ObservableObject {
     }
 }
 
+final class VoiceNote: ObservableObject {
+    @Published var text = ""
+    @Published var listening = false
+    private let engine = AVAudioEngine()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-CA")) ?? SFSpeechRecognizer()
+
+    func start() {
+        guard !listening else { return }
+        listening = true
+        text = ""
+        SFSpeechRecognizer.requestAuthorization { status in
+            AVAudioApplication.requestRecordPermission { granted in
+                DispatchQueue.main.async {
+                    guard status == .authorized, granted else { self.text = "(speech or microphone not allowed)"; return }
+                    if self.listening { self.begin() }
+                }
+            }
+        }
+    }
+
+    private func begin() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers, .defaultToSpeaker])
+        try? session.setActive(true)
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        if recognizer?.supportsOnDeviceRecognition == true { req.requiresOnDeviceRecognition = true }
+        request = req
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in req.append(buffer) }
+        engine.prepare()
+        try? engine.start()
+        task = recognizer?.recognitionTask(with: req) { result, _ in
+            if let result { DispatchQueue.main.async { self.text = result.bestTranscription.formattedString } }
+        }
+    }
+
+    func stop(_ done: @escaping (String) -> Void) {
+        listening = false
+        if engine.isRunning {
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        request?.endAudio()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            self.task?.cancel()
+            self.task = nil
+            self.request = nil
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            done(self.text)
+        }
+    }
+}
+
 struct LookBar: View {
     @ObservedObject var look: LookClient
     let app: String
+    let fps: Double
     let info: () -> [String: String]
     let snapshot: (@escaping (UIImage?) -> Void) -> Void
+    @StateObject private var voice = VoiceNote()
     @State private var note = ""
     @State private var live = false
-    private let tick = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
+    @State private var liveSession = ""
+    @State private var liveCount = 0
+    @State private var lastFrame = Date.distantPast
+    private let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                TextField("note for Skye (🎤 to dictate)", text: $note)
+                Image(systemName: voice.listening ? "mic.fill" : "mic")
+                    .font(.system(size: 17, weight: .bold))
+                    .frame(width: 44, height: 36)
+                    .foregroundStyle(.white)
+                    .background(voice.listening ? Color.red : Color.blue, in: RoundedRectangle(cornerRadius: 10))
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { _ in if !voice.listening { voice.start() } }
+                        .onEnded { _ in
+                            snapshot { image in
+                                voice.stop { words in
+                                    look.send(kind: "look", app: app, note: words, info: info(), image: image, maxWidth: 1290)
+                                }
+                            }
+                        })
+                TextField(voice.listening ? "listening…" : "note (or hold 🎤)", text: voice.listening ? $voice.text : $note)
                     .font(.system(size: 13))
                     .padding(.horizontal, 8)
                     .frame(height: 36)
@@ -76,19 +158,17 @@ struct LookBar: View {
                     .foregroundStyle(.black)
                 Button {
                     let n = note
-                    snapshot { image in
-                        look.send(kind: "look", app: app, note: n, info: info(), image: image, maxWidth: 1290)
-                    }
+                    snapshot { image in look.send(kind: "look", app: app, note: n, info: info(), image: image, maxWidth: 1290) }
                     note = ""
                 } label: {
-                    Label("LOOK", systemImage: "eye.fill")
-                        .font(.system(size: 13, weight: .heavy, design: .rounded))
-                        .frame(width: 84, height: 36)
+                    Image(systemName: "eye.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(width: 48, height: 36)
                         .foregroundStyle(.white)
                         .background(Color.orange, in: RoundedRectangle(cornerRadius: 10))
                 }
-                Button { live.toggle() } label: {
-                    Text(live ? "LIVE ●" : "LIVE")
+                Button { toggleLive() } label: {
+                    Text(live ? "■ \(liveCount)" : "LIVE")
                         .font(.system(size: 12, weight: .heavy, design: .rounded))
                         .frame(width: 58, height: 36)
                         .foregroundStyle(.white)
@@ -97,9 +177,30 @@ struct LookBar: View {
             }
             Text(look.state).font(.system(size: 10, design: .monospaced)).foregroundStyle(.white)
         }
-        .onReceive(tick) { _ in
-            guard live else { return }
-            snapshot { image in look.send(kind: "live", app: app, note: "", info: info(), image: image, maxWidth: 540) }
+        .onReceive(tick) { now in
+            guard live, now.timeIntervalSince(lastFrame) >= 1 / max(fps, 0.1) else { return }
+            lastFrame = now
+            liveCount += 1
+            let seq = liveCount, session = liveSession
+            snapshot { image in
+                look.send(kind: "live", app: app, note: "", info: info(), image: image, maxWidth: 720,
+                          extra: ["session": session, "seq": seq])
+            }
+        }
+    }
+
+    private func toggleLive() {
+        if live {
+            live = false
+            look.send(kind: "liveend", app: app, note: "", info: info(), image: nil, maxWidth: 720,
+                      extra: ["session": liveSession, "frames": liveCount])
+        } else {
+            let f = DateFormatter()
+            f.dateFormat = "yyyyMMdd-HHmmss"
+            liveSession = f.string(from: Date())
+            liveCount = 0
+            lastFrame = .distantPast
+            live = true
         }
     }
 }

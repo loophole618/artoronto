@@ -32,6 +32,19 @@ final class AppState: ObservableObject {
 
     @Published var picking = false
     var pick = Pick.site
+    @Published var liveFPS = 1.0
+
+    struct Loupe {
+        let image: CGImage
+        let scale: CGFloat
+        let tap: CGPoint
+        let origin: SIMD3<Float>
+        let d0: SIMD3<Float>
+        let dx: SIMD3<Float>
+        let dy: SIMD3<Float>
+    }
+    @Published var loupe: Loupe?
+    @Published var loupeOffset = CGSize.zero
 
     let placer = SitePlacer()
     let figure = BlockFigure()
@@ -53,7 +66,7 @@ struct ContentView: View {
                     controls
                     hud
                 }
-                LookBar(look: state.look, app: "artoronto", info: lookInfo) { done in
+                LookBar(look: state.look, app: "artoronto", fps: state.liveFPS, info: lookInfo) { done in
                     if let v = state.arView { v.snapshot(saveToHDR: false) { done($0) } } else { done(nil) }
                 }
                 Button { state.panelOpen.toggle() } label: {
@@ -66,6 +79,19 @@ struct ContentView: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 16)
+
+            if let loupe = state.loupe {
+                LoupeView(loupe: loupe, offset: $state.loupeOffset) { set in
+                    if set {
+                        let o = state.loupeOffset
+                        let d = loupe.d0 + loupe.dx * Float(o.width) + loupe.dy * Float(o.height)
+                        state.placer.nudgeTap(origin: loupe.origin, direction: simd_normalize(d))
+                    }
+                    state.loupe = nil
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.top, 70)
+            }
         }
         .fileImporter(isPresented: $state.picking, allowedContentTypes: [.json, .data, .item]) { result in
             guard case .success(let url) = result else { return }
@@ -125,6 +151,11 @@ struct ContentView: View {
             Toggle("Figure follows me", isOn: $state.follower)
             Toggle("Wear avatar", isOn: $state.wear)
             Toggle("Heart", isOn: $state.heart)
+            Picker("LIVE frames", selection: $state.liveFPS) {
+                Text("LIVE 0.5 / s").tag(0.5)
+                Text("LIVE 1 / s").tag(1.0)
+                Text("LIVE 2 / s").tag(2.0)
+            }
             Divider()
             Button("Load site…") { state.pick = .site; state.picking = true }
             Button("Load avatar…") { state.pick = .avatar; state.picking = true }
@@ -415,8 +446,21 @@ struct ARViewContainer: UIViewRepresentable {
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let arView, mode == .street else { return }
             if state.placer.nudging {
-                if let ray = arView.ray(through: gesture.location(in: arView)) {
-                    state.placer.nudgeTap(origin: ray.origin, direction: ray.direction)
+                let p = gesture.location(in: arView)
+                guard let r0 = arView.ray(through: p),
+                      let rx = arView.ray(through: CGPoint(x: p.x + 1, y: p.y)),
+                      let ry = arView.ray(through: CGPoint(x: p.x, y: p.y + 1)) else { return }
+                let d0 = simd_normalize(r0.direction)
+                let dx = simd_normalize(rx.direction) - d0
+                let dy = simd_normalize(ry.direction) - d0
+                arView.snapshot(saveToHDR: false) { image in
+                    guard let image, let cg = image.cgImage else {
+                        self.state.placer.nudgeTap(origin: r0.origin, direction: d0)
+                        return
+                    }
+                    self.state.loupeOffset = .zero
+                    self.state.loupe = AppState.Loupe(image: cg, scale: image.scale, tap: p,
+                                                      origin: r0.origin, d0: d0, dx: dx, dy: dy)
                 }
                 return
             }
@@ -456,5 +500,63 @@ struct ARViewContainer: UIViewRepresentable {
             let dub = 0.6 * exp(-pow((phase - 0.30) / 0.05, 2))
             heart?.scale = SIMD3<Float>(repeating: Float(1 + 0.08 * (lub + dub)))
         }
+    }
+}
+
+struct LoupeView: View {
+    let loupe: AppState.Loupe
+    @Binding var offset: CGSize
+    let done: (Bool) -> Void
+    @State private var base = CGSize.zero
+    private let span: CGFloat = 80
+    private let zoom: CGFloat = 3
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                if let crop = crop() {
+                    Image(decorative: crop, scale: loupe.scale)
+                        .resizable()
+                        .interpolation(.none)
+                        .frame(width: span * zoom, height: span * zoom)
+                }
+                Rectangle().fill(Color.yellow).frame(width: 1.5, height: 34)
+                Rectangle().fill(Color.yellow).frame(width: 34, height: 1.5)
+            }
+            .frame(width: span * zoom, height: span * zoom)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.yellow, lineWidth: 2))
+            .gesture(DragGesture()
+                .onChanged { g in
+                    offset = CGSize(width: base.width - g.translation.width / zoom,
+                                    height: base.height - g.translation.height / zoom)
+                }
+                .onEnded { _ in base = offset })
+            Text("drag to put the cross on the peak").font(.system(size: 11)).foregroundStyle(.white)
+            HStack(spacing: 10) {
+                Button { done(false) } label: {
+                    Text("CANCEL").font(.system(size: 13, weight: .bold, design: .rounded))
+                        .frame(width: 100, height: 36).foregroundStyle(.white)
+                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+                }
+                Button { done(true) } label: {
+                    Text("SET").font(.system(size: 14, weight: .heavy, design: .rounded))
+                        .frame(width: 100, height: 36).foregroundStyle(.black)
+                        .background(Color.yellow, in: RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+        .padding(10)
+        .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+        .onAppear { base = offset }
+    }
+
+    private func crop() -> CGImage? {
+        let s = loupe.scale
+        let cx = (loupe.tap.x + offset.width) * s, cy = (loupe.tap.y + offset.height) * s
+        let half = span * s / 2
+        let r = CGRect(x: cx - half, y: cy - half, width: half * 2, height: half * 2)
+            .intersection(CGRect(x: 0, y: 0, width: loupe.image.width, height: loupe.image.height))
+        return r.isEmpty ? nil : loupe.image.cropping(to: r.integral)
     }
 }

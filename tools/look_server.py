@@ -6,7 +6,8 @@
   as "_skyelook._tcp", so the apps find it without an address.
 - POST /look with JSON {kind, app, note, info, time, jpeg(base64)}:
     kind "look": saved to field-tests/inbox/<time>-<app>.jpg + .json
-    kind "live": overwrites field-tests/inbox/live-<app>.jpg + .json (just the latest frame)
+    kind "live": frames kept in field-tests/inbox/live-<app>-<session>/, latest also as live-<app>.jpg
+    kind "liveend": <time>-<app>-live.json naming the session folder
 - GET /ping answers "ok".
 Only addresses on the local network are accepted. Stdlib only.
 """
@@ -17,6 +18,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 INBOX = ROOT / "field-tests" / "inbox"
 INBOX.mkdir(parents=True, exist_ok=True)
 MAX_BYTES = 20 * 1024 * 1024
+
+
+def write(path, data):
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 def safe(s, n=24):
@@ -54,23 +61,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             msg = json.loads(self.rfile.read(n))
         except Exception:
             return self._reply(400, "bad json")
-        kind = "look" if msg.get("kind") == "look" else "live"
+        kind = msg.get("kind") if msg.get("kind") in ("look", "live", "liveend") else "live"
         app = safe(msg.get("app"))
         jpeg = msg.pop("jpeg", None)
         msg["received"] = datetime.datetime.now().isoformat(timespec="seconds")
-        if kind == "look":
-            stem = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{app}"
+        now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        if kind == "live":
+            session = safe(msg.get("session") or "", 32)
+            if jpeg:
+                raw = base64.b64decode(jpeg)
+                write(INBOX / f"live-{app}.jpg", raw)
+                if session:
+                    folder = INBOX / f"live-{app}-{session}"
+                    folder.mkdir(exist_ok=True)
+                    seq = int(msg.get("seq") or 0)
+                    write(folder / f"{seq:05d}.jpg", raw)
+                    with open(folder / "frames.jsonl", "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"seq": seq, "time": msg.get("time"), "info": msg.get("info")}) + "\n")
+            write(INBOX / f"live-{app}.json", json.dumps(msg, indent=1).encode())
+        elif kind == "liveend":
+            session = safe(msg.get("session") or "", 32)
+            msg["folder"] = str(INBOX / f"live-{app}-{session}")
+            write(INBOX / f"{now}-{app}-live.json", json.dumps(msg, indent=1).encode())
+            print(f"LIVE ended from {app}: {msg.get('frames')} frames -> {msg['folder']}", flush=True)
         else:
-            stem = f"live-{app}"
-        if jpeg:
-            tmp = INBOX / (stem + ".jpg.part")
-            tmp.write_bytes(base64.b64decode(jpeg))
-            os.replace(tmp, INBOX / (stem + ".jpg"))
-            msg["image"] = stem + ".jpg"
-        tmp = INBOX / (stem + ".json.part")
-        tmp.write_text(json.dumps(msg, indent=1), encoding="utf-8")
-        os.replace(tmp, INBOX / (stem + ".json"))   # the .json lands last: the watcher keys on it
-        if kind == "look":
+            stem = f"{now}-{app}"
+            if jpeg:
+                write(INBOX / (stem + ".jpg"), base64.b64decode(jpeg))
+                msg["image"] = stem + ".jpg"
+            write(INBOX / (stem + ".json"), json.dumps(msg, indent=1).encode())
             print(f"LOOK from {app}: {msg.get('note', '')!r} -> {stem}", flush=True)
         self._reply(200, "ok")
 

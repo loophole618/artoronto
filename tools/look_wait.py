@@ -15,6 +15,7 @@ while True:
         for p in new:
             msg = json.loads(p.read_text(encoding="utf-8"))
             print(json.dumps({"file": str(p), "image": str(INBOX / msg.get("image", "")) if msg.get("image") else None,
-                              "note": msg.get("note"), "app": msg.get("app"), "info": msg.get("info")}, indent=1))
+                              "note": msg.get("note"), "app": msg.get("app"), "kind": msg.get("kind"),
+                              "folder": msg.get("folder"), "frames": msg.get("frames"), "info": msg.get("info")}, indent=1))
         sys.exit(0)
     time.sleep(1)

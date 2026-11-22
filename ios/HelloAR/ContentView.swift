@@ -74,6 +74,18 @@ struct ContentView: View {
                 LookBar(look: status.look, app: "artoronto", info: lookInfo) { done in
                     if let v = status.arView { v.snapshot(saveToHDR: false) { done($0) } } else { done(nil) }
                 }
+                HStack(spacing: 10) {
+                    Button { status.placer.startNudge() } label: {
+                        Text("NUDGE ✛").font(.system(size: 14, weight: .heavy, design: .rounded))
+                            .frame(maxWidth: .infinity, minHeight: 36).foregroundStyle(.black)
+                            .background(Color.yellow, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    Button { status.placer.resetNudge() } label: {
+                        Text("RESET").font(.system(size: 13, weight: .bold, design: .rounded))
+                            .frame(width: 80, height: 36).foregroundStyle(.white)
+                            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("ARToronto · hello AR").font(.headline)
                     Text("tracking: \(status.tracking)")
@@ -165,7 +177,7 @@ struct ARViewContainer: UIViewRepresentable {
             coordinator.update(deltaTime: event.deltaTime)
         }
 
-        let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleTap))
+        let tap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.handleTap(_:)))
         arView.addGestureRecognizer(tap)
         return arView
     }
@@ -268,7 +280,14 @@ struct ARViewContainer: UIViewRepresentable {
 
         // MARK: input + tracking
 
-        @objc func handleTap() {
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            // During NUDGE a tap is a sight line on the benchmark, not a heart move.
+            if status.placer.nudging, let arView {
+                if let ray = arView.ray(through: gesture.location(in: arView)) {
+                    status.placer.nudgeTap(origin: ray.origin, direction: ray.direction)
+                }
+                return
+            }
             guard let arView, let anchor,
                   let camera = arView.session.currentFrame?.camera else { return }
             var offset = matrix_identity_float4x4

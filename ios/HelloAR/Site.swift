@@ -10,7 +10,8 @@ import UIKit
 // address or coordinates live in this public repo:
 //   { "name": "...", "height_m": 11.0, "color": [1,0,0], "opacity": 0.2,
 //     "lot": [[lat, lon], ...], "envelope": [[lat, lon], ...] }
-// "lot" is drawn as an outline on the ground, "envelope" as a box `height_m` tall.
+// "lot" is drawn as an outline on the ground, "envelope" as a box `height_m` tall,
+// and an optional "benchmark": {"name", "lat", "lon", "height_m"} as a yellow ball.
 //
 // Placement, best first:
 // 1. Apple's location anchors (ARGeoTrackingConfiguration), where Apple has
@@ -19,12 +20,21 @@ import UIKit
 //    placed from the GPS fix. Good to ~5-10 m; it re-places as the fix improves.
 
 struct SiteFile: Decodable {
+    /// A point on the real building you can see and sight on (a roof peak, a corner):
+    /// drawn as a yellow ball. NUDGE sights it from two spots and shifts the site to match.
+    struct Benchmark: Decodable {
+        let name: String
+        let lat: Double
+        let lon: Double
+        let height_m: Double
+    }
     let name: String
     let height_m: Double
     let color: [Double]?
     let opacity: Double?
     let lot: [[Double]]?
     let envelope: [[Double]]
+    let benchmark: Benchmark?
 
     var centre: CLLocationCoordinate2D {
         let pts = envelope
@@ -75,6 +85,15 @@ enum SiteModel {
             root.addChild(bar(a + [0, h, 0], b + [0, h, 0], 0.04, edgeMat))
             root.addChild(bar(a, a + [0, h, 0], 0.04, edgeMat))
         }
+        // The benchmark: a yellow ball with a line down to the ground.
+        if let b = site.benchmark {
+            let p = benchmarkPosition(site, b)
+            let yellow = UnlitMaterial(color: .yellow)
+            let ball = ModelEntity(mesh: .generateSphere(radius: 0.12), materials: [yellow])
+            ball.position = p
+            root.addChild(ball)
+            root.addChild(bar(SIMD3(p.x, 0, p.z), p, 0.02, yellow))
+        }
         // The lot line on the ground, in white.
         if let lot = site.lot {
             let lr = lot.map { SiteFile.en($0, from: c) }.map { SIMD3<Float>($0.x, 0.02, -$0.y) }
@@ -82,6 +101,12 @@ enum SiteModel {
             for i in lr.indices { root.addChild(bar(lr[i], lr[(i + 1) % lr.count], 0.05, white)) }
         }
         return root
+    }
+
+    /// Where the data puts the benchmark, in the site's own axes (x east, y up, z south).
+    static func benchmarkPosition(_ site: SiteFile, _ b: SiteFile.Benchmark) -> SIMD3<Float> {
+        let e = SiteFile.en([b.lat, b.lon], from: site.centre)
+        return SIMD3(e.x, Float(b.height_m), -e.y)
     }
 
     /// A thin bar from a to b.
@@ -142,6 +167,71 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
     private var mode = ""
     private var bestAccuracy: Double = .infinity
 
+    // MARK: NUDGE
+
+    /// The saved correction (site axes: x east, z south), applied to the whole model.
+    private(set) var offset = SIMD3<Float>(0, 0, 0)
+    private var rays: [(SIMD3<Float>, SIMD3<Float>)] = []
+    private(set) var nudging = false
+
+    private var offsetKey: String { "siteOffset:" + (site?.name ?? "") }
+
+    private func loadOffset() {
+        let v = UserDefaults.standard.array(forKey: offsetKey) as? [Double] ?? [0, 0]
+        offset = SIMD3(Float(v[0]), 0, Float(v.count > 1 ? v[1] : 0))
+        model?.position = offset
+    }
+
+    func startNudge() {
+        guard let site, let b = site.benchmark, anchor != nil else {
+            onStatus?("NUDGE needs a placed site with a benchmark"); return
+        }
+        nudging = true
+        rays = []
+        onStatus?("NUDGE: tap the real \(b.name) (the yellow ball is where the data puts it)")
+    }
+
+    func resetNudge() {
+        UserDefaults.standard.removeObject(forKey: offsetKey)
+        nudging = false
+        rays = []
+        loadOffset()
+        onStatus?("\(site?.name ?? "site"): nudge cleared")
+    }
+
+    /// A tap during NUDGE: a sight line from the camera through the tapped pixel.
+    func nudgeTap(origin: SIMD3<Float>, direction: SIMD3<Float>) {
+        guard nudging, let site, let b = site.benchmark, let anchor else { return }
+        rays.append((origin, simd_normalize(direction)))
+        guard rays.count == 2 else {
+            onStatus?("NUDGE: now walk 3 m or more sideways and tap the \(b.name) again")
+            return
+        }
+        let (o1, d1) = rays[0], (o2, d2) = rays[1]
+        rays = []
+        let bb = simd_dot(d1, d2)
+        let angle = acos(min(1, abs(bb))) * 180 / .pi
+        guard angle > 3 else {
+            onStatus?(String(format: "NUDGE: the two sight lines are only %.1f° apart; walk further sideways and start again", angle))
+            nudging = false
+            return
+        }
+        // The closest points of the two sight lines; their midpoint is the real benchmark.
+        let w0 = o1 - o2
+        let d = simd_dot(d1, w0), e = simd_dot(d2, w0), denom = 1 - bb * bb
+        let s = (bb * e - d) / denom, t = (e - bb * d) / denom
+        let p1 = o1 + d1 * s, p2 = o2 + d2 * t
+        let real = anchor.convert(position: (p1 + p2) / 2, from: nil)
+        let predicted = SiteModel.benchmarkPosition(site, b) + offset
+        offset.x += real.x - predicted.x
+        offset.z += real.z - predicted.z
+        model?.position = offset
+        UserDefaults.standard.set([Double(offset.x), Double(offset.z)], forKey: offsetKey)
+        nudging = false
+        onStatus?(String(format: "%@: nudged %.2f m E, %.2f m N · %@ measured %.1f m up (file says %.1f) · lines %.2f m apart, %.0f°",
+                         site.name, offset.x, -offset.z, b.name, real.y, b.height_m, simd_distance(p1, p2), angle))
+    }
+
     /// Phone height above the ground, for the GPS + compass fallback.
     static let phoneHeight: Float = 1.4
 
@@ -183,6 +273,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         arView.session.add(anchor: ga)
         let a = AnchorEntity(anchor: ga)
         a.addChild(model)
+        loadOffset()
         arView.scene.addAnchor(a)
         geoAnchor = ga; anchor = a
         onStatus?("\(site.name): Apple location anchor, localizing… (point at the buildings)")
@@ -234,6 +325,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         if anchor == nil {
             let a = AnchorEntity(world: at)
             a.addChild(model)
+            loadOffset()
             arView.scene.addAnchor(a)
             anchor = a
         } else {

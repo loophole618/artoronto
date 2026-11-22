@@ -241,6 +241,13 @@ struct ARViewContainer: UIViewRepresentable {
         state.placer.onStatus = { text in DispatchQueue.main.async { state.site = text } }
         state.placer.onRestart = { state.trailing = false; state.clearRequests += 1 }
         state.placer.arView = arView
+        state.placer.onNudged = { [weak arView] in
+            arView?.snapshot(saveToHDR: false) { image in
+                state.look.send(kind: "look", app: "artoronto", note: "auto: nudge result",
+                                info: ["mode": state.mode.rawValue, "site": state.site, "build": BuildInfo.label],
+                                image: image, maxWidth: 1290)
+            }
+        }
 
         c.updates = arView.scene.subscribe(to: SceneEvents.Update.self) { event in
             c.update(deltaTime: event.deltaTime)
@@ -343,6 +350,7 @@ struct ARViewContainer: UIViewRepresentable {
                 }
             }
             caterpillar.update(time: time, deltaTime: dt)
+            state.placer.nudgeTick(camera: cam)
 
             if state.follower, let pose = walker.step(dt: Float(dt), camera: cam) {
                 figure.update(walker: pose.joints, headMatrix: pose.head)

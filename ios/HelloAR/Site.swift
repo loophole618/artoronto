@@ -130,6 +130,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
     private var pending: SiteFile?
     var onStatus: ((String) -> Void)?
     var onRestart: (() -> Void)?
+    var onNudged: (() -> Void)?
 
     private var site: SiteFile?
     private var model: Entity?
@@ -142,6 +143,41 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
     private(set) var offset = SIMD3<Float>(0, 0, 0)
     private var rays: [(SIMD3<Float>, SIMD3<Float>)] = []
     private(set) var nudging = false
+    private var sightLine: AnchorEntity?
+    private var lastAngleText: CFTimeInterval = 0
+
+    private func clearSightLine() {
+        if let sightLine { arView?.scene.removeAnchor(sightLine) }
+        sightLine = nil
+    }
+
+    private func showSightLine(from o: SIMD3<Float>, along d: SIMD3<Float>) {
+        clearSightLine()
+        let a = AnchorEntity(world: o)
+        let len: Float = 40
+        let line = ModelEntity(mesh: .generateBox(size: 1), materials: [UnlitMaterial(color: .yellow)])
+        line.transform = Transform(scale: SIMD3(0.012, len, 0.012),
+                                   rotation: simd_quatf(from: SIMD3(0, 1, 0), to: d),
+                                   translation: d * (len / 2 + 0.3))
+        a.addChild(line)
+        arView?.scene.addAnchor(a)
+        sightLine = a
+    }
+
+    func nudgeTick(camera: SIMD3<Float>) {
+        guard nudging, rays.count == 1, let site, let b = site.benchmark, let anchor else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastAngleText > 0.25 else { return }
+        lastAngleText = now
+        let (o1, d1) = rays[0]
+        let guess = anchor.convert(position: SiteModel.benchmarkPosition(site, b) + offset, to: nil)
+        let target = o1 + d1 * max(simd_dot(guess - o1, d1), 1)
+        let toTarget = target - camera
+        guard simd_length(toTarget) > 0.5 else { return }
+        let angle = acos(min(1, abs(simd_dot(d1, simd_normalize(toTarget))))) * 180 / .pi
+        let verdict = angle < 3 ? "keep walking along the house" : (angle < 10 ? "ok, more is better" : "good, tap the \(b.name) again")
+        onStatus?(String(format: "NUDGE: angle %.0f° · %@", angle, verdict))
+    }
 
     private var offsetKey: String { "siteOffset:" + (site?.name ?? "") }
 
@@ -157,6 +193,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         }
         nudging = true
         rays = []
+        clearSightLine()
         onStatus?("NUDGE: tap the real \(b.name) (the yellow ball is where the data puts it)")
     }
 
@@ -164,6 +201,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         UserDefaults.standard.removeObject(forKey: offsetKey)
         nudging = false
         rays = []
+        clearSightLine()
         loadOffset()
         onStatus?("\(site?.name ?? "site"): nudge cleared")
     }
@@ -172,9 +210,11 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         guard nudging, let site, let b = site.benchmark, let anchor else { return }
         rays.append((origin, simd_normalize(direction)))
         guard rays.count == 2 else {
-            onStatus?("NUDGE: now walk 3 m or more sideways and tap the \(b.name) again")
+            showSightLine(from: origin, along: simd_normalize(direction))
+            onStatus?("NUDGE: now walk along the house; the angle shows here")
             return
         }
+        clearSightLine()
         let (o1, d1) = rays[0], (o2, d2) = rays[1]
         rays = []
         let bb = simd_dot(d1, d2)
@@ -197,6 +237,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         nudging = false
         onStatus?(String(format: "%@: nudged %.2f m E, %.2f m N · %@ measured %.1f m up (file says %.1f) · lines %.2f m apart, %.0f°",
                          site.name, offset.x, -offset.z, b.name, real.y, b.height_m, simd_distance(p1, p2), angle))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.onNudged?() }
     }
 
     static let phoneHeight: Float = 1.4

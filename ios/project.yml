@@ -28,6 +28,8 @@ targets:
         NSLocationWhenInUseUsageDescription: "ARToronto uses your location to place site overlays on the real street."
         NSLocalNetworkUsageDescription: "ARToronto sends what it sees to the studio computer on your Wi-Fi when you press LOOK."
         NSBonjourServices: ["_skyelook._tcp"]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         ARTBuildLabel: "$(ART_BUILD_LABEL)"
     settings:
       base:

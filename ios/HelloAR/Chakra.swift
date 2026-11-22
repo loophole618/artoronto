@@ -1,20 +1,9 @@
+// Seven glowing solids, root to crown.
 import RealityKit
 import UIKit
 import simd
 
-// The spine's vertebrae: one glowing solid per chakra, root to crown.
-// Shape = the chakra's element as its classical (Platonic) solid:
-//   earth = cube, water = icosahedron, fire = tetrahedron (point down, like
-//   Manipura's downward triangle), air = octahedron, ether = dodecahedron.
-// Ajna = a bead of light; Sahasrara = a flat white disc (the full moon).
-// Colour = the petal colours from art-studio's build_chakras.py (the texts,
-// not the modern rainbow), so the walk-spine matches the chakra spheres.
 enum Chakra {
-    /// r = circumradius in metres. Build 6 ("dragon"): every chakra in green, dark
-    /// jade at the root to bright lime at the crown, so each 7-segment cycle reads
-    /// like a band of scales. The text petal colours (builds 4-5) were:
-    /// root (1,.03,.14) · sacral (1,.30,.02) · solar (.08,.28,1) · heart (1,.10,.08)
-    /// · throat (.58,.12,1) · Ajna (.90,.97,1) · crown (1,1,1).
     static func all(radius r: Float = 0.035) -> [(name: String, mesh: MeshResource, material: RealityKit.Material)] {
         return [
             ("Muladhara", MeshResource.generateBox(size: r * 1.15),        glow(0.04, 0.42, 0.16)),
@@ -32,14 +21,12 @@ enum Chakra {
         var m = PhysicallyBasedMaterial()
         m.baseColor = .init(tint: c)
         m.emissiveColor = .init(color: c)
-        m.emissiveIntensity = 0.55   // a little lower than build 5, so the facets still read on big solids
+        m.emissiveIntensity = 0.55
         m.roughness = .init(floatLiteral: 0.35)
         m.metallic = .init(floatLiteral: 0.0)
         m.faceCulling = .none
         return m
     }
-
-    // MARK: solids
 
     static func octahedron(radius: Float) -> MeshResource {
         let v: [SIMD3<Float>] = [[1,0,0], [-1,0,0], [0,1,0], [0,-1,0], [0,0,1], [0,0,-1]]
@@ -68,8 +55,6 @@ enum Chakra {
         return flatMesh(v, equilateralTriangles(v), radius)
     }
 
-    /// The dual of the icosahedron: its 20 face centres are the dodecahedron's
-    /// vertices; the 5 faces around each icosahedron vertex make one pentagon.
     static func dodecahedron(radius: Float) -> MeshResource {
         let iv = icosahedronVertices()
         let tris = equilateralTriangles(iv)
@@ -90,8 +75,6 @@ enum Chakra {
         return flatMesh(dv, faces, radius)
     }
 
-    /// Every triple of vertices whose three sides all equal the shortest edge.
-    /// That is exactly the face list for the tetrahedron, octahedron and icosahedron.
     static func equilateralTriangles(_ v: [SIMD3<Float>]) -> [[Int]] {
         var edge = Float.greatestFiniteMagnitude
         for i in v.indices { for j in v.indices where j > i { edge = min(edge, simd_distance(v[i], v[j])) } }
@@ -108,8 +91,6 @@ enum Chakra {
         return faces
     }
 
-    /// Flat-shaded mesh: each face gets its own vertices and one outward normal,
-    /// so the facets catch light like cut glass.
     static func flatMesh(_ v: [SIMD3<Float>], _ faces: [[Int]], _ radius: Float) -> MeshResource {
         let scale = radius / (v.map { simd_length($0) }.max() ?? 1)
         var positions: [SIMD3<Float>] = []

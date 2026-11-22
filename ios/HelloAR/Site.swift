@@ -1,27 +1,11 @@
+// Site overlay from a JSON file, placed by location anchors or GPS + compass; NUDGE.
 import Foundation
 import RealityKit
 import ARKit
 import CoreLocation
 import UIKit
 
-// A site overlay placed by location: a translucent zoning volume over a real lot.
-//
-// The site comes from a small JSON file picked in Files (SITE button), so no
-// address or coordinates live in this public repo:
-//   { "name": "...", "height_m": 11.0, "color": [1,0,0], "opacity": 0.2,
-//     "lot": [[lat, lon], ...], "envelope": [[lat, lon], ...] }
-// "lot" is drawn as an outline on the ground, "envelope" as a box `height_m` tall,
-// and an optional "benchmark": {"name", "lat", "lon", "height_m"} as a yellow ball.
-//
-// Placement, best first:
-// 1. Apple's location anchors (ARGeoTrackingConfiguration), where Apple has
-//    street imagery: the phone matches the buildings around it, ~1-2 m.
-// 2. GPS + compass: the world is aligned to north at launch and the site is
-//    placed from the GPS fix. Good to ~5-10 m; it re-places as the fix improves.
-
 struct SiteFile: Decodable {
-    /// A point on the real building you can see and sight on (a roof peak, a corner):
-    /// drawn as a yellow ball. NUDGE sights it from two spots and shifts the site to match.
     struct Benchmark: Decodable {
         let name: String
         let lat: Double
@@ -42,7 +26,6 @@ struct SiteFile: Decodable {
                                       longitude: pts.map { $0[1] }.reduce(0, +) / Double(pts.count))
     }
 
-    /// Metres east and north of `origin`.
     static func en(_ p: [Double], from origin: CLLocationCoordinate2D) -> SIMD2<Float> {
         let k = 111_320 * cos(origin.latitude * .pi / 180)
         return SIMD2(Float((p[1] - origin.longitude) * k), Float((p[0] - origin.latitude) * 110_574))
@@ -50,8 +33,6 @@ struct SiteFile: Decodable {
 }
 
 enum SiteModel {
-    /// The site's geometry around its own centre, in ARKit's geo-anchor axes:
-    /// x east, y up, z south.
     static func make(_ site: SiteFile) -> Entity {
         let root = Entity()
         let c = site.centre
@@ -62,7 +43,6 @@ enum SiteModel {
         let ring = site.envelope.map { SiteFile.en($0, from: c) }.map { SIMD3<Float>($0.x, 0, -$0.y) }
         let h = Float(site.height_m)
         if let mesh = prism(ring, height: h) {
-            // Two shells so the see-through box renders cleanly from inside and out.
             let group = ModelSortGroup(depthPass: nil)
             for (order, cull) in [(Int32(0), PhysicallyBasedMaterial.FaceCulling.front), (1, .back)] {
                 var m = PhysicallyBasedMaterial()
@@ -76,7 +56,6 @@ enum SiteModel {
                 root.addChild(e)
             }
         }
-        // Solid edges, so the box reads from far off.
         var edgeMat = UnlitMaterial(color: colour)
         edgeMat.blending = .transparent(opacity: .init(floatLiteral: 0.9))
         for i in ring.indices {
@@ -85,7 +64,6 @@ enum SiteModel {
             root.addChild(bar(a + [0, h, 0], b + [0, h, 0], 0.04, edgeMat))
             root.addChild(bar(a, a + [0, h, 0], 0.04, edgeMat))
         }
-        // The benchmark: a yellow ball with a line down to the ground.
         if let b = site.benchmark {
             let p = benchmarkPosition(site, b)
             let yellow = UnlitMaterial(color: .yellow)
@@ -94,7 +72,6 @@ enum SiteModel {
             root.addChild(ball)
             root.addChild(bar(SIMD3(p.x, 0, p.z), p, 0.02, yellow))
         }
-        // The lot line on the ground, in white.
         if let lot = site.lot {
             let lr = lot.map { SiteFile.en($0, from: c) }.map { SIMD3<Float>($0.x, 0.02, -$0.y) }
             let white = UnlitMaterial(color: .white)
@@ -103,13 +80,11 @@ enum SiteModel {
         return root
     }
 
-    /// Where the data puts the benchmark, in the site's own axes (x east, y up, z south).
     static func benchmarkPosition(_ site: SiteFile, _ b: SiteFile.Benchmark) -> SIMD3<Float> {
         let e = SiteFile.en([b.lat, b.lon], from: site.centre)
         return SIMD3(e.x, Float(b.height_m), -e.y)
     }
 
-    /// A thin bar from a to b.
     private static func bar(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float, _ m: RealityKit.Material) -> ModelEntity {
         let d = b - a, len = max(simd_length(d), 0.001)
         let e = ModelEntity(mesh: .generateBox(size: 1), materials: [m])
@@ -119,7 +94,6 @@ enum SiteModel {
         return e
     }
 
-    /// A closed prism: walls, roof and floor, every triangle facing outward.
     private static func prism(_ ring: [SIMD3<Float>], height h: Float) -> MeshResource? {
         guard ring.count >= 3 else { return nil }
         let centre = ring.reduce(SIMD3<Float>(0, 0, 0), +) / Float(ring.count) + SIMD3(0, h / 2, 0)
@@ -137,7 +111,7 @@ enum SiteModel {
             let a = ring[i], b = ring[(i + 1) % ring.count]
             tri(a, b, b + up); tri(a, b + up, a + up)
         }
-        for i in 1..<(ring.count - 1) {   // fan: fine for the convex footprints zoning gives
+        for i in 1..<(ring.count - 1) {
             tri(ring[0] + up, ring[i] + up, ring[i + 1] + up)
             tri(ring[0], ring[i], ring[i + 1])
         }
@@ -149,14 +123,12 @@ enum SiteModel {
     }
 }
 
-/// Places a site in the world, by geo anchor if Apple supports this spot, else by GPS + compass.
 final class SitePlacer: NSObject, CLLocationManagerDelegate {
     weak var arView: ARView? {
         didSet { if arView != nil, let s = pending { pending = nil; load(s) } }
     }
     private var pending: SiteFile?
     var onStatus: ((String) -> Void)?
-    /// Called when the session is restarted for a different tracking mode (the caterpillar is cleared).
     var onRestart: (() -> Void)?
 
     private var site: SiteFile?
@@ -167,9 +139,6 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
     private var mode = ""
     private var bestAccuracy: Double = .infinity
 
-    // MARK: NUDGE
-
-    /// The saved correction (site axes: x east, z south), applied to the whole model.
     private(set) var offset = SIMD3<Float>(0, 0, 0)
     private var rays: [(SIMD3<Float>, SIMD3<Float>)] = []
     private(set) var nudging = false
@@ -199,7 +168,6 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         onStatus?("\(site?.name ?? "site"): nudge cleared")
     }
 
-    /// A tap during NUDGE: a sight line from the camera through the tapped pixel.
     func nudgeTap(origin: SIMD3<Float>, direction: SIMD3<Float>) {
         guard nudging, let site, let b = site.benchmark, let anchor else { return }
         rays.append((origin, simd_normalize(direction)))
@@ -216,7 +184,6 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
             nudging = false
             return
         }
-        // The closest points of the two sight lines; their midpoint is the real benchmark.
         let w0 = o1 - o2
         let d = simd_dot(d1, w0), e = simd_dot(d2, w0), denom = 1 - bb * bb
         let s = (bb * e - d) / denom, t = (e - bb * d) / denom
@@ -232,7 +199,6 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
                          site.name, offset.x, -offset.z, b.name, real.y, b.height_m, simd_distance(p1, p2), angle))
     }
 
-    /// Phone height above the ground, for the GPS + compass fallback.
     static let phoneHeight: Float = 1.4
 
     func load(_ site: SiteFile) {
@@ -260,8 +226,6 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         anchor = nil; geoAnchor = nil; bestAccuracy = .infinity
     }
 
-    // MARK: 1. Apple location anchors
-
     private func startGeoMode() {
         guard let arView, let site, let model else { return }
         mode = "geo"
@@ -269,7 +233,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         config.planeDetection = [.horizontal]
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         onRestart?()
-        let ga = ARGeoAnchor(coordinate: site.centre)   // altitude: ground level from Apple's map data
+        let ga = ARGeoAnchor(coordinate: site.centre)
         arView.session.add(anchor: ga)
         let a = AnchorEntity(anchor: ga)
         a.addChild(model)
@@ -299,14 +263,12 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         onStatus?("\(site.name): Apple anchor \(state) · accuracy \(acc)")
     }
 
-    // MARK: 2. GPS + compass
-
     private func startCompassMode(reason: String) {
         guard let arView, let site else { return }
         mode = "compass"
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.horizontal]
-        config.worldAlignment = .gravityAndHeading   // x east, y up, z south
+        config.worldAlignment = .gravityAndHeading
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         onRestart?()
         onStatus?("\(site.name): GPS + compass (\(reason)), waiting for a fix…")
@@ -316,7 +278,6 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         guard mode == "compass", let site, let model, let arView,
               let fix = locations.last, fix.horizontalAccuracy > 0,
               let cam = arView.session.currentFrame?.camera.transform else { return }
-        // Re-place only when the fix is clearly better than the one we used.
         guard fix.horizontalAccuracy < bestAccuracy * 0.8 else { return }
         bestAccuracy = fix.horizontalAccuracy
         let off = SiteFile.en([site.centre.latitude, site.centre.longitude], from: fix.coordinate)

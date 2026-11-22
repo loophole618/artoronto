@@ -1,35 +1,24 @@
+// The chakra caterpillar: grows along your walk, crawls when you stop.
 import RealityKit
 import simd
 import Foundation
 
-// The caterpillar (installations card 27: "a caterpillar of yourself that grows
-// a segment per step along your real route").
-//
-// GROWING (GO): every 15 cm of your walk adds the next chakra solid.
-// CRAWLING (STOP): the body slides forward along the route you walked. The head
-//   leads, arcs back through the air to where you started, and the creature
-//   circles its own walk for ever: an ouroboros of your route.
-// ALWAYS: a swell runs tail to head (peristalsis) and lifts a small hump, and
-//   the crawl surges on the swell, inchworm fashion. Each element keeps a
-//   little of its nature: earth sits still, water bobs, fire flickers, air
-//   drifts, ether tumbles, Ajna blinks, the crown disc spins and breathes.
 final class Caterpillar {
     let root = AnchorEntity(world: SIMD3<Float>(0, 0, 0))
     private(set) var path: [SIMD3<Float>] = []
     private var segments: [(entity: ModelEntity, kind: Int)] = []
     private var loop: [SIMD3<Float>] = []
-    private var crawl: Double = 0          // how far the body has slid along the loop, in segments
+    private var crawl: Double = 0
     private(set) var crawling = false
     private lazy var chakras = Chakra.all(radius: 0.035 * Self.size)
 
-    static let size: Float = 3.5           // build 6: segments 3.5x build 5 (~25 cm across)
-    static let spacing: Float = 0.25       // metres between segments (they just touch on the swell)
-    static let waveHz = 0.7                // the swell
-    static let crawlSpeed = 2.2            // segments per second at the top of a surge
+    static let size: Float = 3.5
+    static let spacing: Float = 0.25
+    static let waveHz = 0.7
+    static let crawlSpeed = 2.2
 
     var count: Int { segments.count }
 
-    /// Add the next segment at p. Returns the chakra's name.
     func grow(at p: SIMD3<Float>) -> String {
         if crawling { stopCrawling() }
         let kind = segments.count % chakras.count
@@ -49,7 +38,6 @@ final class Caterpillar {
         crawling = true
     }
 
-    /// Back to where each segment was laid (used when GO is pressed again).
     func stopCrawling() {
         crawling = false
         crawl = 0
@@ -75,32 +63,32 @@ final class Caterpillar {
         let tf = Float(t)
         for (i, seg) in segments.enumerated() {
             let fi = Float(i)
-            let phase = omega * t - 0.55 * Double(i)          // travels tail -> head
-            let swell = Float(pow(max(0, sin(phase)), 2))     // 0...1
+            let phase = omega * t - 0.55 * Double(i)
+            let swell = Float(pow(max(0, sin(phase)), 2))
             var p = crawling ? point(at: Double(i) + crawl) : path[i]
-            let k = Self.size / 2                             // motion grows with the body, a bit less than size
-            p.y += 0.05 * k * swell                           // the hump
+            let k = Self.size / 2
+            p.y += 0.05 * k * swell
             var s = SIMD3<Float>(repeating: 1 + 0.35 * swell)
             var q = simd_quatf(angle: tf * 0.6 + fi * 0.9, axis: SIMD3<Float>(0, 1, 0))
 
             switch seg.kind {
-            case 1: // water: bobs
+            case 1:
                 p.y += 0.012 * k * sinf(2.2 * tf + fi)
-            case 2: // fire: flickers
+            case 2:
                 s *= 1 + 0.10 * sinf(13 * tf + fi) * sinf(7.3 * tf + 2 * fi)
-            case 3: // air: drifts up and down, slowly
+            case 3:
                 p.y += 0.03 * k * sinf(0.8 * tf + 0.5 * fi)
-            case 4: // ether: tumbles on every axis
+            case 4:
                 let axis = simd_normalize(SIMD3<Float>(1, 0.4, 0.7))
                 q = q * simd_quatf(angle: 1.3 * tf + fi, axis: axis)
-            case 5: // Ajna: blinks
+            case 5:
                 s *= 0.8 + 0.6 * powf(max(0, sinf(1.6 * tf + fi)), 12)
-            case 6: // crown: spins and breathes open
+            case 6:
                 q = simd_quatf(angle: 2.5 * tf + fi, axis: SIMD3<Float>(0, 1, 0))
                 let open = 1 + 0.2 * sinf(1.1 * tf + fi)
                 s.x *= open
                 s.z *= open
-            default: // earth: still
+            default:
                 break
             }
 
@@ -109,8 +97,6 @@ final class Caterpillar {
             seg.entity.scale = s
         }
     }
-
-    // MARK: path
 
     private func point(at u: Double) -> SIMD3<Float> {
         let n = loop.count
@@ -122,7 +108,6 @@ final class Caterpillar {
         return simd_mix(loop[i0], loop[i1], SIMD3<Float>(repeating: f))
     }
 
-    /// From the head back to the tail's start: a straight line lifted into an arch.
     static func returnLeg(from a: SIMD3<Float>, to b: SIMD3<Float>) -> [SIMD3<Float>] {
         let d = simd_distance(a, b)
         let m = max(1, Int(d / spacing))

@@ -1,14 +1,7 @@
+// LOOK / LIVE: send the AR view and readings to the studio receiver over Wi-Fi.
 import SwiftUI
 import Network
 import UIKit
-
-// LOOK: send what the app sees to the studio computer on the same Wi-Fi.
-//
-// The studio receiver (a small script on the studio computer) announces itself over
-// Bonjour as "_skyelook._tcp", so no address lives in the app. A LOOK sends the
-// AR picture, the HUD readings and a note (type it, or dictate with the
-// keyboard's mic); LIVE sends a smaller frame every few seconds instead of
-// screen mirroring.
 
 final class LookClient: ObservableObject {
     @Published var state = "looking for the studio on Wi-Fi…"
@@ -63,13 +56,10 @@ final class LookClient: ObservableObject {
     }
 }
 
-/// The LOOK row: a note field, LOOK, and LIVE.
 struct LookBar: View {
     @ObservedObject var look: LookClient
     let app: String
-    /// The HUD readings to send along.
     let info: () -> [String: String]
-    /// Grab the AR picture (ARView.snapshot), then call back.
     let snapshot: (@escaping (UIImage?) -> Void) -> Void
     @State private var note = ""
     @State private var live = false

@@ -104,6 +104,16 @@ final class Dragon {
         init(_ e: Entity) { entity = e }
     }
     private var hearts: [Heart] = []
+
+    // talking with her mind (Sky)
+    var listening = false
+    var thinking = false
+    private var attention: Float = 0
+    private var actionFly: Float = 0
+    private var purrTimer: Float = 0
+    private var pendingAction: String?
+    private var replyAge: Float = 0
+    private var wasThinking = false
     private static let heartLife: Float = 1.6
 
     init() {
@@ -430,11 +440,15 @@ final class Dragon {
             }
         case .off: break
         }
+        if actionFly > 0 { actionFly -= dt; wantsFly = true }
+        purrTimer = max(0, purrTimer - dt)
+        attention += ((listening || thinking ? 1 : 0) - attention) * min(1, 5 * dt)
+        voice.hush = listening || thinking
 
         // petting: she stops for scratches; enough of them and she rolls over for a belly rub
         petting = max(0, petting - 1.5 * dt)
         happy = max(0, happy - 0.04 * dt)
-        let petted = petting > 0.05
+        let petted = petting > 0.05 || purrTimer > 0
         if petted && mode != .fly { wantsFly = false; flyTimer = 0 }
         squint += ((petted ? 1 : 0) - squint) * min(1, 5 * dt)
         if happy > 0.85 && rollTimer <= 0 && rolling < 0.05 && flight < 0.05 {
@@ -489,7 +503,7 @@ final class Dragon {
             target.y = floorY
         }
 
-        if (petted || rollTimer > 0) && !wantsFly { target = SIMD3<Float>(p.x, floorY, p.z) }
+        if (petted || rollTimer > 0 || attention > 0.5) && !wantsFly { target = SIMD3<Float>(p.x, floorY, p.z) }
 
         // a damped spring toward the target
         let k: Float = wantsFly ? 2.4 : 3.2
@@ -604,14 +618,14 @@ final class Dragon {
         let d = lookAt - headWorld
         let c = cosf(yaw), s = sinf(yaw)
         let lx = d.x * c - d.z * s, lz = d.x * s + d.z * c
-        let weight = 1 - 0.65 * walkAmount
+        let weight = max(1 - 0.65 * walkAmount, attention)
         var hy = Self.clamp(atan2f(lx, lz), -1.0, 1.0) * weight
         var hp = Self.clamp(-atan2f(d.y, hypotf(lx, lz)), -0.8, 0.6) * weight - pitch
         if breath > 0 { hy *= 0.3; hp = -0.25 }
         hp -= 0.35 * squint
         headYaw += (hy - headYaw) * min(1, 6 * dt)
         headPitch += (hp - headPitch) * min(1, 6 * dt)
-        headPivot.orientation = Self.ry(headYaw) * Self.rx(headPitch) * Self.rz(0.3 * squint * sinf(1.3 * time))
+        headPivot.orientation = Self.ry(headYaw) * Self.rx(headPitch) * Self.rz(0.3 * squint * sinf(1.3 * time) + 0.3 * (thinking ? 1 : 0.4) * attention)
         tailPhase += dt * (2.2 + 5 * squint + 3 * happy)
         let jawWant: Float = breath > 0 ? 0.9 : (voice.speaking ? 0.35 + 0.35 * abs(sinf(16 * time)) : 0)
         jaw += (jawWant - jaw) * min(1, 12 * dt)
@@ -652,7 +666,9 @@ final class Dragon {
             }
         }
 
-        if breath > 0 { status = "breathing fire!" }
+        if listening { status = "listening to you" }
+        else if thinking { status = "thinking" }
+        else if breath > 0 { status = "breathing fire!" }
         else if rolling > 0.5 { status = "rolling over for belly rubs!" }
         else if squint > 0.5 { status = "loves the scratches" }
         else if wantsFly { status = circling ? "circling over your head" : "flying over you" }
@@ -688,7 +704,34 @@ final class Dragon {
         spawnHeart()
     }
 
+    /// Her mind answered: say it, then do the action once the words are out.
+    func reply(_ text: String, action: String?) {
+        thinking = false
+        voice.speak(text)
+        pendingAction = action
+        replyAge = 0
+    }
+
+    private func perform(_ action: String) {
+        switch action {
+        case "fly": actionFly = 10
+        case "land": actionFly = 0; flyTimer = 0
+        case "fire": breath = 0.9
+        case "roll": actionFly = 0; flyTimer = 0; happy = 1
+        case "hop": if hopY == 0 && flight < 0.05 { hopV = 1.1 }; voice.giggle()
+        case "purr": purrTimer = 3
+        default: break
+        }
+    }
+
     private func talkAndHearts(moving: Bool, dt: Float) {
+        if thinking && !wasThinking { voice.chirp() }
+        wasThinking = thinking
+        replyAge += dt
+        if let a = pendingAction, replyAge > 0.6, !voice.speaking {
+            pendingAction = nil
+            perform(a)
+        }
         voice.purr(min(1, squint * 1.2 + rolling * 0.6))
         if helloTimer > 0 {
             helloTimer -= dt

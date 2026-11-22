@@ -8,6 +8,8 @@ final class FirepearlVoice: NSObject, AVSpeechSynthesizerDelegate {
     static let friend = "Ava"
     var talks = true
     var sounds = true
+    /// While she is listening or thinking she keeps her own chatter to herself.
+    var hush = false
     private(set) var speaking = false
 
     private let speech = AVSpeechSynthesizer()
@@ -63,7 +65,7 @@ final class FirepearlVoice: NSObject, AVSpeechSynthesizerDelegate {
     /// Says a line for the moment, unless she spoke very recently. Returns true if she spoke.
     @discardableResult
     func say(_ m: Moment) -> Bool {
-        guard talks, var options = Self.lines[m] else { return false }
+        guard talks, !hush, var options = Self.lines[m] else { return false }
         let now = CACurrentMediaTime()
         let gap: CFTimeInterval
         switch m {
@@ -84,6 +86,20 @@ final class FirepearlVoice: NSObject, AVSpeechSynthesizerDelegate {
         if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
         speech.speak(u)
         return true
+    }
+
+    /// Speaks a reply from her mind (Sky): always, interrupting any chatter.
+    func speak(_ text: String) {
+        lastSpoke = CACurrentMediaTime()
+        prepareSession()
+        let u = AVSpeechUtterance(string: text)
+        u.voice = Self.voice
+        u.pitchMultiplier = 1.65
+        u.rate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * 1.05)
+        u.volume = 1
+        if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
+        speaking = true
+        speech.speak(u)
     }
 
     func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart u: AVSpeechUtterance) { speaking = true }

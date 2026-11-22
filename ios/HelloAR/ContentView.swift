@@ -81,6 +81,8 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(dragonSounds, forKey: "dragonSounds") }
     }
     var fireRequests = 0
+    let sky = SkyLink()
+    @Published var skyConnectOpen = false
     weak var arView: ARView?
     var siteFile: SiteFile?
     var forgetWalk = false
@@ -88,6 +90,8 @@ final class AppState: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var state = AppState()
+    @State private var skyAddress = ""
+    @State private var skyPin = ""
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -140,6 +144,23 @@ struct ContentView: View {
                 state.splat.load(url: from, label: url.lastPathComponent)
             }
         }
+        .alert("Connect Firepearl to Sky", isPresented: $state.skyConnectOpen) {
+            TextField("Sky's web address", text: $skyAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            SecureField("PIN", text: $skyPin)
+                .keyboardType(.numberPad)
+            Button("Connect") {
+                state.sky.connect(server: skyAddress, pin: skyPin) { ok in
+                    if ok { state.dragon.reply("I'm awake! Hi \(FirepearlVoice.friend)!", action: "hop") }
+                }
+                skyPin = ""
+            }
+            Button("Cancel", role: .cancel) { skyPin = "" }
+        } message: {
+            Text("Sky is Firepearl's mind. Type the address and PIN once; the phone remembers.")
+        }
         .onAppear {
             let fm = FileManager.default
             if fm.fileExists(atPath: Self.savedAvatar.path) { loadAvatar(from: Self.savedAvatar, label: "last avatar") }
@@ -188,6 +209,9 @@ struct ContentView: View {
                 button("🔥 FIRE", .red) { state.fireRequests += 1 }
                 button(state.splatVisible ? "👤 GUY ✓" : "👤 GUY ✗", state.splatVisible ? .indigo : .gray) { state.splatVisible.toggle() }
             }
+            if state.dragonMode != .off {
+                TalkButton(sky: state.sky, begin: beginTalk, end: endTalk)
+            }
         }
     }
 
@@ -201,6 +225,8 @@ struct ContentView: View {
                     ForEach(Dragon.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 Button("Breathe fire 🔥") { state.fireRequests += 1 }
+                Button("Connect to Sky…") { openSkyConnect() }
+                Button("Disconnect from Sky") { state.sky.disconnect() }
                 Toggle("Talks", isOn: $state.dragonTalks)
                 Toggle("Purrs and chirps", isOn: $state.dragonSounds)
             }
@@ -291,7 +317,7 @@ struct ContentView: View {
          "body": state.body, "placement": state.placement.rawValue, "size": "\(state.size)",
          "occlude": "\(state.occlude)", "wear": "\(state.wear)", "avatar": state.avatar,
          "walk": state.walkText, "occlusion": state.occlusion, "splat": state.splatText,
-         "dragon": "\(state.dragonMode.rawValue) · \(state.dragonText)",
+         "dragon": "\(state.dragonMode.rawValue) · \(state.dragonText)", "sky": state.sky.status,
          "build": BuildInfo.label]
     }
 
@@ -311,6 +337,36 @@ struct ContentView: View {
     private static var savedSite: URL { documents.appendingPathComponent("site.json") }
     private static var savedAvatar: URL { documents.appendingPathComponent("avatar.gltf") }
     private static var savedSplat: URL { documents.appendingPathComponent("probe.splat") }
+
+    private func openSkyConnect() {
+        skyAddress = state.sky.server
+        skyPin = ""
+        state.skyConnectOpen = true
+    }
+
+    private func beginTalk() {
+        guard state.sky.connected else {
+            if !state.skyConnectOpen { openSkyConnect() }
+            return
+        }
+        state.sky.startListening()
+        state.dragon.listening = true
+    }
+
+    private func endTalk() {
+        guard state.sky.listening else { return }
+        state.sky.stopListening { words in
+            state.dragon.listening = false
+            guard !words.isEmpty else {
+                state.dragon.reply("Hmm? I didn't hear anything.", action: nil)
+                return
+            }
+            state.dragon.thinking = true
+            state.sky.send(words) { reply, action in
+                state.dragon.reply(reply ?? "I can't reach my mind right now. Try again in a moment!", action: action)
+            }
+        }
+    }
 
     private func loadSite(from url: URL) {
         do {
@@ -852,5 +908,40 @@ struct LoupeView: View {
         let r = CGRect(x: cx - half, y: cy - half, width: half * 2, height: half * 2)
             .intersection(CGRect(x: 0, y: 0, width: loupe.image.width, height: loupe.image.height))
         return r.isEmpty ? nil : loupe.image.cropping(to: r.integral)
+    }
+}
+
+/// Hold to talk to Firepearl; her mind (Sky) answers through her voice.
+struct TalkButton: View {
+    @ObservedObject var sky: SkyLink
+    let begin: () -> Void
+    let end: () -> Void
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(label)
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .foregroundStyle(.white)
+                .background((sky.listening ? Color.red : Color.orange).opacity(0.9), in: RoundedRectangle(cornerRadius: 12))
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { _ in if !sky.listening && !sky.busy { begin() } }
+                    .onEnded { _ in end() })
+            if !sky.status.isEmpty {
+                Text(sky.status)
+                    .font(.system(size: 10, design: .monospaced))
+                    .lineLimit(2)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var label: String {
+        if sky.listening { return "👂 LISTENING… let go to send" }
+        if sky.busy { return "💭 FIREPEARL IS THINKING…" }
+        return sky.connected ? "🎤 HOLD TO TALK TO FIREPEARL" : "🎤 CONNECT FIREPEARL TO SKY"
     }
 }

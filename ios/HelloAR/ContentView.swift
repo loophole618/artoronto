@@ -167,34 +167,42 @@ struct ContentView: View {
             Picker("Mode", selection: $state.mode) {
                 ForEach(AppState.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            Divider()
-            Toggle("Figure follows me", isOn: $state.follower)
-            Toggle("Wear avatar", isOn: $state.wear)
-            Toggle("Heart", isOn: $state.heart)
-            Toggle("Procession", isOn: $state.procession)
-            Toggle("Captured walk (CMU)", isOn: $state.capturedWalk)
-            Picker("Figures", selection: $state.procCount) {
-                ForEach([1, 3, 5, 8], id: \.self) { Text("\($0) figures").tag($0) }
+            Menu("Splat") {
+                Button("Place splat here") { state.splat.replace() }
+                Button("Load splat…") { state.pick = .splat; state.picking = true }
+                Toggle("Splat visible", isOn: $state.splatVisible)
             }
-            Picker("Spacing", selection: $state.procSpacing) {
-                ForEach([Float(1.0), 1.5, 2.0, 3.0], id: \.self) { Text(String(format: "%.1f m apart", $0)).tag($0) }
+            Menu("Procession") {
+                Toggle("Procession", isOn: $state.procession)
+                Toggle("Captured walk (CMU)", isOn: $state.capturedWalk)
+                Picker("Figures", selection: $state.procCount) {
+                    ForEach([1, 3, 5, 8], id: \.self) { Text("\($0) figures").tag($0) }
+                }
+                Picker("Spacing", selection: $state.procSpacing) {
+                    ForEach([Float(1.0), 1.5, 2.0, 3.0], id: \.self) { Text(String(format: "%.1f m apart", $0)).tag($0) }
+                }
+                Picker("Speed", selection: $state.procSpeed) {
+                    ForEach([Float(0.6), 0.9, 1.2], id: \.self) { Text(String(format: "%.1f m/s", $0)).tag($0) }
+                }
+                Button("Forget saved walk") { state.walkPoints = []; state.walkText = "cleared"; state.clearRequests += 1; state.forgetWalk = true }
             }
-            Picker("Speed", selection: $state.procSpeed) {
-                ForEach([Float(0.6), 0.9, 1.2], id: \.self) { Text(String(format: "%.1f m/s", $0)).tag($0) }
+            Menu("Figure") {
+                Toggle("Figure follows me", isOn: $state.follower)
+                Toggle("Wear avatar", isOn: $state.wear)
+                Button("Load avatar…") { state.pick = .avatar; state.picking = true }
             }
-            Button("Forget saved walk") { state.walkPoints = []; state.walkText = "cleared"; state.clearRequests += 1; state.forgetWalk = true }
-            Picker("LIVE frames", selection: $state.liveFPS) {
-                Text("LIVE 0.5 / s").tag(0.5)
-                Text("LIVE 1 / s").tag(1.0)
-                Text("LIVE 2 / s").tag(2.0)
+            Menu("Site") {
+                Button("Load site…") { state.pick = .site; state.picking = true }
+                Button("Reset nudge") { state.placer.resetNudge() }
             }
-            Divider()
-            Button("Load site…") { state.pick = .site; state.picking = true }
-            Button("Load avatar…") { state.pick = .avatar; state.picking = true }
-            Button("Load splat…") { state.pick = .splat; state.picking = true }
-            Button("Place splat here") { state.splat.replace() }
-            Toggle("Splat visible", isOn: $state.splatVisible)
-            Button("Reset nudge") { state.placer.resetNudge() }
+            Menu("More") {
+                Toggle("Heart", isOn: $state.heart)
+                Picker("LIVE frames", selection: $state.liveFPS) {
+                    Text("LIVE 0.5 / s").tag(0.5)
+                    Text("LIVE 1 / s").tag(1.0)
+                    Text("LIVE 2 / s").tag(2.0)
+                }
+            }
         } label: {
             Text("☰ \(state.mode.rawValue)")
                 .font(.system(size: 13, weight: .heavy, design: .rounded))
@@ -311,16 +319,16 @@ struct ARViewContainer: UIViewRepresentable {
         arView.scene.addAnchor(c.caterpillar.root)
         if let a = state.figure.root as? AnchorEntity { arView.scene.addAnchor(a) }
 
-        state.placer.onStatus = { text in DispatchQueue.main.async { state.site = text } }
+        state.placer.onStatus = { text in DispatchQueue.main.async { if state.site != text { state.site = text } } }
         state.placer.onRestart = { state.trailing = false; state.clearRequests += 1 }
         state.placer.onAnchor = { anchor in
             c.procession.root.removeFromParent()
             anchor.addChild(c.procession.root)
             c.loadWalk()
         }
-        state.placer.onOcclusion = { text in DispatchQueue.main.async { state.occlusion = text } }
+        state.placer.onOcclusion = { text in DispatchQueue.main.async { if state.occlusion != text { state.occlusion = text } } }
         state.splat.arView = arView
-        state.splat.onStatus = { text in DispatchQueue.main.async { state.splatText = text } }
+        state.splat.onStatus = { text in DispatchQueue.main.async { if state.splatText != text { state.splatText = text } } }
         arView.renderCallbacks.postProcess = { ctx in state.splat.postProcess(ctx) }
         state.placer.arView = arView
         state.placer.onNudged = { [weak arView] in
@@ -592,7 +600,7 @@ struct ARViewContainer: UIViewRepresentable {
                 @unknown default: text = "limited"
                 }
             }
-            DispatchQueue.main.async { self.state.tracking = text }
+            DispatchQueue.main.async { if self.state.tracking != text { self.state.tracking = text } }
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {

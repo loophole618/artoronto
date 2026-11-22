@@ -77,6 +77,9 @@ final class AppState: ObservableObject {
     @Published var dragonTalks = UserDefaults.standard.object(forKey: "dragonTalks") as? Bool ?? true {
         didSet { UserDefaults.standard.set(dragonTalks, forKey: "dragonTalks") }
     }
+    @Published var dragonVoice = UserDefaults.standard.object(forKey: "dragonVoice") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(dragonVoice, forKey: "dragonVoice") }
+    }
     @Published var dragonSounds = UserDefaults.standard.object(forKey: "dragonSounds") as? Bool ?? true {
         didSet { UserDefaults.standard.set(dragonSounds, forKey: "dragonSounds") }
     }
@@ -233,6 +236,7 @@ struct ContentView: View {
                 Button("Disconnect from Sky") { state.sky.disconnect() }
                 Toggle("Talks", isOn: $state.dragonTalks)
                 Toggle("Purrs and chirps", isOn: $state.dragonSounds)
+                Toggle("Dragon voice", isOn: $state.dragonVoice)
             }
             Menu("Splat") {
                 Button("Place splat here") { state.splat.replace() }
@@ -593,6 +597,7 @@ struct ARViewContainer: UIViewRepresentable {
             }
             state.dragon.voice.talks = state.dragonTalks
             state.dragon.voice.sounds = state.dragonSounds
+            state.dragon.voice.dragonVoice = state.dragonVoice
             state.dragon.update(dt: dt, mode: state.dragonMode, leaderFloor: leaderFloor, leaderHead: leaderHead,
                                 viewer: viewer, camera: cam, cameraForward: fwd, fire: fire)
             let text = state.dragon.status

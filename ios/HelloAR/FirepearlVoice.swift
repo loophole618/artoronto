@@ -10,7 +10,19 @@ final class FirepearlVoice: NSObject, AVSpeechSynthesizerDelegate {
     var sounds = true
     /// While she is listening or thinking she keeps her own chatter to herself.
     var hush = false
-    private(set) var speaking = false
+    /// Speech goes through a little dragon throat (pitch up, a growly flutter, some grit); off = the plain voice.
+    var dragonVoice = true
+    var speaking: Bool { synthSpeaking || rendering || fxPlaying }
+    private var synthSpeaking = false
+    private var rendering = false
+    private var fxPlaying = false
+    private var utterID = 0
+    private let player = AVAudioPlayerNode()
+    private let throat = AVAudioUnitTimePitch()
+    private var throatRate: Double = 0
+    private let fxLock = NSLock()
+    private var fxSamples: [Float] = []
+    private var fxSampleRate: Double = 0
 
     private let speech = AVSpeechSynthesizer()
     private var lastSpoke: CFTimeInterval = -100
@@ -57,6 +69,9 @@ final class FirepearlVoice: NSObject, AVSpeechSynthesizerDelegate {
         }
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.attach(player)
+        engine.attach(throat)
+        throat.pitch = 500
         engine.prepare()
     }
 
@@ -72,39 +87,106 @@ final class FirepearlVoice: NSObject, AVSpeechSynthesizerDelegate {
         case .hello, .boop, .pet, .roll: gap = 2.5
         default: gap = 6
         }
-        guard now - lastSpoke > gap, !speech.isSpeaking || m == .hello else { return false }
+        guard now - lastSpoke > gap, !speaking || m == .hello else { return false }
         if options.count > 1, let last = lastLine[m] { options.removeAll { $0 == last } }
         let line = options.randomElement()!
         lastLine[m] = line
-        lastSpoke = now
-        prepareSession()
-        let u = AVSpeechUtterance(string: line)
-        u.voice = Self.voice
-        u.pitchMultiplier = 1.65
-        u.rate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * 1.05)
-        u.volume = 1
-        if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
-        speech.speak(u)
+        utter(line)
         return true
     }
 
     /// Speaks a reply from her mind (Sky): always, interrupting any chatter.
-    func speak(_ text: String) {
-        lastSpoke = CACurrentMediaTime()
-        prepareSession()
+    func speak(_ text: String) { utter(text) }
+
+    private func plainUtterance(_ text: String) -> AVSpeechUtterance {
         let u = AVSpeechUtterance(string: text)
         u.voice = Self.voice
+        u.volume = 1
         u.pitchMultiplier = 1.65
         u.rate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * 1.05)
-        u.volume = 1
-        if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
-        speaking = true
-        speech.speak(u)
+        return u
     }
 
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart u: AVSpeechUtterance) { speaking = true }
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) { speaking = false }
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) { speaking = false }
+    private func utter(_ text: String) {
+        lastSpoke = CACurrentMediaTime()
+        prepareSession()
+        utterID += 1
+        let id = utterID
+        player.stop()
+        fxPlaying = false
+        if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
+        guard dragonVoice else {
+            synthSpeaking = true
+            speech.speak(plainUtterance(text))
+            return
+        }
+        // render the words to samples, then play them through the dragon throat
+        let u = AVSpeechUtterance(string: text)
+        u.voice = Self.voice
+        u.volume = 1
+        u.pitchMultiplier = 1.15
+        u.rate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * 1.08)
+        fxLock.lock(); fxSamples = []; fxSampleRate = 0; fxLock.unlock()
+        rendering = true
+        speech.write(u) { [weak self] buffer in
+            guard let self, let pcm = buffer as? AVAudioPCMBuffer else { return }
+            let n = Int(pcm.frameLength)
+            if n == 0 {
+                DispatchQueue.main.async { self.playThroughThroat(id: id, text: text) }
+                return
+            }
+            var chunk = [Float](repeating: 0, count: n)
+            if let fl = pcm.floatChannelData {
+                for k in 0..<n { chunk[k] = fl[0][k] }
+            } else if let i16 = pcm.int16ChannelData {
+                for k in 0..<n { chunk[k] = Float(i16[0][k]) / 32768 }
+            } else if let i32 = pcm.int32ChannelData {
+                for k in 0..<n { chunk[k] = Float(i32[0][k]) / 2147483648 }
+            }
+            self.fxLock.lock()
+            self.fxSamples += chunk
+            self.fxSampleRate = pcm.format.sampleRate
+            self.fxLock.unlock()
+        }
+        // if the end-of-speech buffer never comes, play what arrived
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.playThroughThroat(id: id, text: text) }
+    }
+
+    private func playThroughThroat(id: Int, text: String) {
+        guard id == utterID, rendering else { return }
+        rendering = false
+        fxLock.lock(); var s = fxSamples; let rate = fxSampleRate; fxSamples = []; fxLock.unlock()
+        ensureRunning()
+        guard !s.isEmpty, rate > 0, engine.isRunning,
+              let fmt = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1),
+              let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(s.count)) else {
+            synthSpeaking = true
+            speech.speak(plainUtterance(text))
+            return
+        }
+        // the throat: a 32 Hz flutter (a purring growl) and a little grit
+        let w = 2 * Float.pi * 32 / Float(rate)
+        let grit: Float = 1.8, norm = tanhf(1.8)
+        for k in s.indices { s[k] = tanhf(grit * s[k] * (0.7 + 0.3 * sinf(w * Float(k)))) / norm }
+        buf.frameLength = AVAudioFrameCount(s.count)
+        if let out = buf.floatChannelData?[0] { s.withUnsafeBufferPointer { out.update(from: $0.baseAddress!, count: s.count) } }
+        if rate != throatRate {
+            engine.disconnectNodeOutput(player)
+            engine.disconnectNodeOutput(throat)
+            engine.connect(player, to: throat, format: fmt)
+            engine.connect(throat, to: engine.mainMixerNode, format: fmt)
+            throatRate = rate
+        }
+        fxPlaying = true
+        player.scheduleBuffer(buf, at: nil, options: .interrupts) { [weak self] in
+            DispatchQueue.main.async { if self?.utterID == id { self?.fxPlaying = false } }
+        }
+        player.play()
+    }
+
+    func speechSynthesizer(_ s: AVSpeechSynthesizer, didStart u: AVSpeechUtterance) { if !rendering { synthSpeaking = true } }
+    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) { synthSpeaking = false }
+    func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) { synthSpeaking = false }
 
     // MARK: - sounds
 

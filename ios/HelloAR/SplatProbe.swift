@@ -15,7 +15,10 @@ final class SplatProbe {
     private(set) var needsPlacement = false
 
     private var points: [SplatPoint]?
+    private var original: [SplatPoint]?
     private var name = ""
+    private(set) var figures = 1
+    private(set) var every: Float = 0
     private var renderer: SplatRenderer?
     private var rendererFormat: MTLPixelFormat = .invalid
     private var chunkAdded = false
@@ -34,7 +37,9 @@ final class SplatProbe {
                 let reader = try AutodetectSceneReader(url)
                 let pts = try await reader.readAll()
                 await MainActor.run {
+                    self.original = pts
                     self.points = pts
+                    self.parseLayout(label)
                     self.chunkAdded = false
                     self.renderer = nil
                     self.needsPlacement = true
@@ -51,6 +56,38 @@ final class SplatProbe {
     private var stage = ""
 
     func placed() { needsPlacement = false; inFront = false }
+
+    /// "strobe-n16-every0.60.splat": 16 equal figures, one every 0.60 m along the walk.
+    private func parseLayout(_ label: String) {
+        figures = 1; every = 0
+        guard let n = label.range(of: #"n(\d+)"#, options: .regularExpression),
+              let e = label.range(of: #"every(\d+\.?\d*)"#, options: .regularExpression),
+              let nv = Int(label[n].dropFirst()), let ev = Float(label[e].dropFirst(5)), nv > 1 else { return }
+        figures = nv; every = ev
+    }
+
+    /// Stand the figures along a path: frame(s) gives the point and walking direction s metres in.
+    func arrange(along frame: (Float) -> (point: SIMD3<Float>, direction: SIMD3<Float>)?) {
+        guard let original, figures > 1 else { return }
+        let per = original.count / figures
+        var out: [SplatPoint] = []
+        out.reserveCapacity(original.count)
+        var placedFigures = 0
+        for k in 0..<figures {
+            guard let f = frame(Float(k) * every) else { continue }
+            let r = simd_quatf(from: SIMD3(0, 0, -1), to: simd_normalize(f.direction))
+            for i in (k * per)..<min((k + 1) * per, original.count) {
+                var p = original[i]
+                p.position = r.act(p.position) + f.point
+                p.rotation = r * p.rotation
+                out.append(p)
+            }
+            placedFigures += 1
+        }
+        points = out
+        chunkAdded = false
+        note(String(format: "%d figures every %.2f m along the walk", placedFigures, every))
+    }
     func replace() { if points != nil { inFront = true; needsPlacement = true } }
 
     func note(_ where_: String) {
@@ -97,6 +134,7 @@ final class SplatProbe {
             Task {
                 do {
                     let chunk = try SplatChunk(device: device, from: points)
+                    await renderer.removeAllChunks()
                     await renderer.addChunk(chunk)
                     self.step("chunk added")
                 } catch {

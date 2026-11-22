@@ -135,14 +135,18 @@ struct ContentView: View {
             switch state.pick {
             case .site: loadSite(from: from)
             case .avatar: loadAvatar(from: from, label: url.lastPathComponent)
-            case .splat: state.splat.load(url: from, label: url.lastPathComponent)
+            case .splat:
+                UserDefaults.standard.set(url.lastPathComponent, forKey: "splatName")
+                state.splat.load(url: from, label: url.lastPathComponent)
             }
         }
         .onAppear {
             let fm = FileManager.default
             if fm.fileExists(atPath: Self.savedAvatar.path) { loadAvatar(from: Self.savedAvatar, label: "last avatar") }
             if fm.fileExists(atPath: Self.savedSite.path) { loadSite(from: Self.savedSite) }
-            if fm.fileExists(atPath: Self.savedSplat.path) { state.splat.load(url: Self.savedSplat, label: "last splat") }
+            if fm.fileExists(atPath: Self.savedSplat.path) {
+                state.splat.load(url: Self.savedSplat, label: UserDefaults.standard.string(forKey: "splatName") ?? "last splat")
+            }
         }
     }
 
@@ -540,7 +544,11 @@ struct ARViewContainer: UIViewRepresentable {
             let holder = state.splat.holder
             holder.removeFromParent()
             if let a = splatAnchor { arView.scene.removeAnchor(a); splatAnchor = nil }
-            if !state.splat.inFront, let start = procession.start, procession.root.isAnchored {
+            if state.splat.figures > 1, !state.splat.inFront, procession.start != nil, procession.root.isAnchored {
+                procession.root.addChild(holder)
+                holder.transform = Transform()
+                state.splat.arrange(along: { self.procession.frame(at: $0) })
+            } else if !state.splat.inFront, let start = procession.start, procession.root.isAnchored {
                 procession.root.addChild(holder)
                 holder.position = start.point
                 holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: start.direction)
@@ -555,7 +563,12 @@ struct ARViewContainer: UIViewRepresentable {
                 a.addChild(holder)
                 holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: -fwd)
                 splatAnchor = a
-                state.splat.note("placed 2.5 m in front of you")
+                if state.splat.figures > 1 {
+                    holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: fwd)
+                    state.splat.arrange(along: { s in (SIMD3<Float>(0, 0, -s), SIMD3<Float>(0, 0, -1)) })
+                } else {
+                    state.splat.note("placed 2.5 m in front of you")
+                }
             }
             state.splat.placed()
         }

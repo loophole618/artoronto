@@ -85,6 +85,8 @@ final class AppState: ObservableObject {
     }
     var fireRequests = 0
     let sky = SkyLink()
+    let surfaces = Surfaces()
+    @Published var surfacesText = ""
     @Published var skyConnectOpen = false
     weak var arView: ARView?
     var siteFile: SiteFile?
@@ -302,6 +304,7 @@ struct ContentView: View {
                 Text(ARBodyTrackingConfiguration.isSupported ? "body: \(state.body)" : "body tracking not supported on this phone")
             }
             if !state.dragonText.isEmpty { Text("Firepearl: \(state.dragonText)") }
+            if !state.surfacesText.isEmpty && state.dragonMode != .off { Text("surfaces: \(state.surfacesText)") }
             Text("avatar: \(state.avatar)")
             if !state.splatText.isEmpty { Text("splat: \(state.splatText)") }
             Text("ARToronto · build \(BuildInfo.label)")
@@ -499,6 +502,8 @@ struct ARViewContainer: UIViewRepresentable {
             walker.clear()
             caterpillar.clear()
             state.dragon.reset()
+            state.dragon.surfaces = state.surfaces
+            state.surfaces.clear()
             bodyLeader = nil
             lastDrop = nil
             state.trailing = false
@@ -509,6 +514,8 @@ struct ARViewContainer: UIViewRepresentable {
                 guard ARBodyTrackingConfiguration.isSupported else { return }
                 let config = ARBodyTrackingConfiguration()
                 config.automaticSkeletonScaleEstimationEnabled = true
+                config.planeDetection = [.horizontal]
+                arView.environment.sceneUnderstanding.options.remove(.occlusion)
                 arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
                 state.body = "looking for a person…"
             case .street:
@@ -518,6 +525,11 @@ struct ARViewContainer: UIViewRepresentable {
                     let config = ARWorldTrackingConfiguration()
                     config.planeDetection = [.horizontal]
                     config.worldAlignment = .gravity
+                    // the LiDAR room mesh lets furniture hide Firepearl (and anything else) behind it
+                    if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+                        config.sceneReconstruction = .mesh
+                        arView.environment.sceneUnderstanding.options.insert(.occlusion)
+                    }
                     arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
                 }
             }
@@ -597,7 +609,11 @@ struct ARViewContainer: UIViewRepresentable {
             if mode == .body, let b = bodyLeader, time - b.at < 1.5 {
                 leaderFloor = b.floor; leaderHead = b.head; viewer = cam
             } else {
-                if time - floorCache.at > 0.3 { floorCache = (floorBelow(cam), time) }
+                if time - floorCache.at > 0.3 {
+                    floorCache = (state.surfaces.floor(below: cam) ?? floorBelow(cam), time)
+                    let text = state.surfaces.summary(floorY: state.surfaces.floor(below: cam))
+                    if text != state.surfacesText { DispatchQueue.main.async { self.state.surfacesText = text } }
+                }
                 leaderFloor = SIMD3(cam.x, floorCache.y, cam.z); leaderHead = cam; viewer = nil
             }
             state.dragon.voice.talks = state.dragonTalks
@@ -715,7 +731,12 @@ struct ARViewContainer: UIViewRepresentable {
             procession.update(dt: dt, wear: state.wear)
         }
 
+        func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+            state.surfaces.update(anchors)
+        }
+
         func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+            state.surfaces.update(anchors)
             guard mode == .body, let body = anchors.compactMap({ $0 as? ARBodyAnchor }).first else { return }
             figure.placement = state.placement
             figure.size = state.size
@@ -757,6 +778,7 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+            state.surfaces.remove(anchors)
             if mode == .body, anchors.contains(where: { $0 is ARBodyAnchor }) {
                 figure.reset()
                 DispatchQueue.main.async { self.state.body = "looking for a person…" }

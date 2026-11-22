@@ -114,6 +114,15 @@ final class Dragon {
     private var pendingAction: String?
     private var replyAge: Float = 0
     private var wasThinking = false
+
+    // surfaces: seats, beds, tables to perch on; couches and beds to walk around; stairs
+    weak var surfaces: Surfaces?
+    private var perch: Surfaces.Perch?
+    private var perchFlight = false
+    private var perchAsked = false
+    private var leaderIdle: Float = 0
+    private var nextPerchLook: Float = 0
+    private var groundY: Float = 0
     private static let heartLife: Float = 1.6
 
     init() {
@@ -130,6 +139,7 @@ final class Dragon {
         root.isEnabled = false
         for puff in puffs { puff.age = 9; puff.entity.isEnabled = false }
         for h in hearts { h.age = 9; h.entity.isEnabled = false }
+        perch = nil; perchFlight = false
         voice.purr(0)
     }
 
@@ -408,6 +418,8 @@ final class Dragon {
             circling = false
             placed = true
             helloTimer = 1.8
+            groundY = floorY
+            perch = nil; perchFlight = false
             rollTimer = 0; rolling = 0; happy = 0; petting = 0
         }
 
@@ -464,10 +476,27 @@ final class Dragon {
         }
         rolling += ((rollTimer > 0 ? 1 : 0) - rolling) * min(1, 3 * dt)
 
+        // perching: when she settles, Firepearl flutters up onto a seat, bed or table beside her
+        leaderIdle = moving ? 0 : leaderIdle + dt
+        if moving { nextPerchLook = 0 }
+        if perch != nil && (moving || distToLeader > 3 || wantsFly) { perch = nil; perchFlight = false }
+        if perch == nil, let surfaces, mode != .fly, !wantsFly, rollTimer <= 0, attention < 0.5, !petted {
+            nextPerchLook -= dt
+            if perchAsked || (leaderIdle > 3 && nextPerchLook <= 0) {
+                nextPerchLook = 12
+                if perchAsked || Float.random(in: 0...1) < 0.7 {
+                    perch = surfaces.perch(near: leaderFloor, from: p, floorY: floorY)
+                    if perch != nil { perchFlight = true; voice.chirp() }
+                }
+                perchAsked = false
+            }
+        }
+
         // where to be
         var target = p
         let headTop = leaderHead.y + 0.05
         if wantsFly {
+            groundY = floorY
             if moving {
                 circling = false
                 target = trailPoint(lag: Self.flyLag) ?? leaderFloor
@@ -483,41 +512,56 @@ final class Dragon {
                                       headTop + Self.hover + 0.08 * sinf(2 * circle),
                                       leaderHead.z + sinf(circle) * r)
             }
+        } else if let pc = perch {
+            circling = false
+            if perchFlight && simd_length(Self.flat(pc.spot - p)) < 0.1 { perchFlight = false }
+            if perchFlight {
+                target = pc.spot + SIMD3<Float>(0, 0.18, 0)
+            } else {
+                target = pc.spot
+                groundY = pc.spot.y
+            }
         } else {
             circling = false
             let lagPoint = trailPoint(lag: Self.walkLag)
             if moving, let lp = lagPoint {
                 target = lp
+                groundY = lp.y
             } else if let viewer {
+                groundY = floorY
                 var away = Self.flat(leaderFloor - viewer)
                 away = simd_length(away) > 1e-3 ? simd_normalize(away) : SIMD3<Float>(0, 0, -1)
                 let right = simd_cross(away, SIMD3<Float>(0, 1, 0))
                 target = leaderFloor + right * 0.45 + away * 0.1
             } else if distToLeader > 2.2, let lp = lagPoint {
                 target = lp
+                groundY = lp.y
             } else if distToLeader < 0.5 {
                 var out = Self.flat(p - leaderFloor)
                 out = simd_length(out) > 1e-3 ? simd_normalize(out) : SIMD3<Float>(0, 0, 1)
                 target = leaderFloor + out * 0.7
             }
-            target.y = floorY
+            target.y = groundY
         }
 
-        if (petted || rollTimer > 0 || attention > 0.5) && !wantsFly { target = SIMD3<Float>(p.x, floorY, p.z) }
+        let flying = wantsFly || perchFlight
+        if (petted || rollTimer > 0 || attention > 0.5) && !flying { target = SIMD3<Float>(p.x, groundY, p.z) }
 
         // a damped spring toward the target
-        let k: Float = wantsFly ? 2.4 : 3.2
+        let k: Float = flying ? 2.4 : 3.2
         v += ((target - p) * (k * k) - v * (2 * k)) * dt
         var h = SIMD2<Float>(v.x, v.z)
-        let maxH: Float = wantsFly ? 4 : 2.4
+        let maxH: Float = flying ? 4 : 2.4
         if simd_length(h) > maxH { h = simd_normalize(h) * maxH; v.x = h.x; v.z = h.y }
         v.y = Self.clamp(v.y, -2.5, 2.5)
         p += v * dt
-        if p.y < floorY { p.y = floorY; v.y = max(v.y, 0) }
-        if !wantsFly && p.y - floorY < 0.01 { p.y = floorY; v.y = 0 }
+        let floorNow = perchFlight ? floorY : groundY
+        if p.y < floorNow { p.y = floorNow; v.y = max(v.y, 0) }
+        if !flying && p.y - groundY < 0.01 { p.y = groundY; v.y = 0 }
+        if !flying && perch == nil, let surfaces, p.y - groundY < 0.05 { p = surfaces.pushOut(p, floorY: groundY) }
 
-        let height = p.y - floorY
-        flight += ((wantsFly || height > 0.03 ? 1 : 0) - flight) * min(1, 6 * dt)
+        let height = p.y - (perchFlight ? floorY : groundY)
+        flight += ((flying || height > 0.03 ? 1 : 0) - flight) * min(1, 6 * dt)
         let hs = simd_length(SIMD2<Float>(v.x, v.z))
         walkAmount += (min(hs / 0.5, 1) * (1 - flight) - walkAmount) * min(1, 8 * dt)
         gait += hs * dt / Self.stride * 2 * .pi + rolling * 7 * dt
@@ -671,6 +715,17 @@ final class Dragon {
         else if breath > 0 { status = "breathing fire!" }
         else if rolling > 0.5 { status = "rolling over for belly rubs!" }
         else if squint > 0.5 { status = "loves the scratches" }
+        else if let pc = perch {
+            if perchFlight { status = "hopping up" }
+            else {
+                switch pc.kind {
+                case .seat: status = "sitting on the seat beside you"
+                case .bed: status = "curled up on the bed"
+                case .table: status = "up on the table"
+                case .ledge: status = "perched up high"
+                }
+            }
+        }
         else if wantsFly { status = circling ? "circling over your head" : "flying over you" }
         else if flight > 0.05 { status = "landing" }
         else if walkAmount > 0.2 { status = "walking behind you" }
@@ -720,6 +775,7 @@ final class Dragon {
         case "roll": actionFly = 0; flyTimer = 0; happy = 1
         case "hop": if hopY == 0 && flight < 0.05 { hopV = 1.1 }; voice.giggle()
         case "purr": purrTimer = 3
+        case "perch": actionFly = 0; flyTimer = 0; perchAsked = true
         default: break
         }
     }

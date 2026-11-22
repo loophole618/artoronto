@@ -3,13 +3,14 @@ import RealityKit
 import ARKit
 import Combine
 
-// Hello AR, build 4: the walk-spine.
+// Hello AR, build 5: the caterpillar crawls.
 // - The heart: a translucent green sphere (Anahata), 1 m across, 1.5 m ahead,
 //   beating at 72 bpm. Two shells (outside + inside) so it renders cleanly
 //   from both sides. Tap empty space to re-place it 1.5 m in front of you.
-// - The spine: press GO and walk. Every 15 cm a glowing chakra solid drops,
-//   root to crown and round again (see Chakra.swift). Press STOP, turn round,
-//   and your walk hangs in the air as a spine. CLEAR wipes it.
+// - The caterpillar: press GO and walk. Every 15 cm a glowing chakra solid
+//   grows, root to crown and round again (Chakra.swift). Press STOP and it
+//   comes alive: it breathes, then crawls the route you walked and loops home
+//   (Caterpillar.swift). GO again snaps it back and keeps growing. CLEAR wipes it.
 //
 // Positions are relative to where the phone was at launch (ARKit world
 // tracking). Nothing reads GPS yet.
@@ -19,6 +20,7 @@ final class ARStatus: ObservableObject {
     @Published var trailing = false
     @Published var trailCount = 0
     @Published var lastChakra = ""
+    @Published var crawling = false
     var clearRequests = 0
 }
 
@@ -57,7 +59,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("ARToronto · hello AR").font(.headline)
                     Text("tracking: \(status.tracking)")
-                    Text("spine: \(status.trailCount) \(status.lastChakra.isEmpty ? "" : "· \(status.lastChakra)")")
+                    Text("caterpillar: \(status.trailCount) · \(stateText)")
                     Text("build \(BuildInfo.label)")
                 }
                 .font(.system(.footnote, design: .monospaced))
@@ -69,6 +71,13 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.bottom, 24)
         }
+    }
+
+    private var stateText: String {
+        if status.trailing { return "growing \(status.lastChakra)" }
+        if status.crawling { return "crawling" }
+        if status.trailCount > 0 { return "resting (8+ to crawl)" }
+        return "press GO and walk"
     }
 }
 
@@ -95,6 +104,8 @@ struct ARViewContainer: UIViewRepresentable {
         coordinator.anchor = anchor
         coordinator.heart = heart
 
+        arView.scene.addAnchor(coordinator.caterpillar.root)
+
         coordinator.updates = arView.scene.subscribe(to: SceneEvents.Update.self) { event in
             coordinator.update(deltaTime: event.deltaTime)
         }
@@ -112,17 +123,14 @@ struct ARViewContainer: UIViewRepresentable {
         var anchor: AnchorEntity?
         var heart: Entity?
         var updates: Cancellable?
+        let caterpillar = Caterpillar()
         private var time: Double = 0
 
-        // Trail: the spine. Each step drops the next chakra, root to crown, repeating.
-        private var trailAnchor: AnchorEntity?
         private var lastDrop: SIMD3<Float>?
         private var handledClears = 0
-        private lazy var chakras: [(name: String, mesh: MeshResource, material: RealityKit.Material)] = Chakra.all()
-        private static let dropSpacing: Float = 0.15    // metres between vertebrae
+        private var wasTrailing = false
         private static let dropBelowPhone: Float = 0.10 // so solids don't sit on the lens
-        private static let maxDots = 1500
-        private static let spin: Float = 0.6            // rad/s, every solid turns slowly
+        private static let maxSegments = 800
 
         init(status: ARStatus) { self.status = status }
 
@@ -131,10 +139,8 @@ struct ARViewContainer: UIViewRepresentable {
         static func makeHeart() -> Entity {
             let heart = Entity()
             let sortGroup = ModelSortGroup(depthPass: nil)
-            // Inside shell first (draws only back faces: visible from inside, and the
-            // far wall from outside), then the outside shell (front faces only).
-            // Each shell is convex and one-sided, so it can't overlap itself.
-            // That overlap caused build 1's sawtooth edge and streaks.
+            // Inside shell first (back faces only), then the outside shell (front
+            // faces only). Each is convex and one-sided, so neither overlaps itself.
             let inner = shell(culling: .front, opacity: 0.30)
             inner.components.set(ModelSortGroupComponent(group: sortGroup, order: 0))
             let outer = shell(culling: .back, opacity: 0.40)
@@ -158,63 +164,51 @@ struct ARViewContainer: UIViewRepresentable {
         // MARK: per-frame
 
         func update(deltaTime: Double) {
-            beat(deltaTime: deltaTime)
-
-            if let trail = trailAnchor {
-                let turn = simd_quatf(angle: Self.spin * Float(deltaTime), axis: SIMD3<Float>(0, 1, 0))
-                for solid in trail.children { solid.orientation = turn * solid.orientation }
-            }
+            time += deltaTime
+            beat()
 
             if status.clearRequests != handledClears {
                 handledClears = status.clearRequests
-                clearTrail()
+                caterpillar.clear()
+                lastDrop = nil
+                status.trailCount = 0
+                status.lastChakra = ""
+                status.crawling = false
             }
 
-            guard status.trailing else { lastDrop = nil; return }
-            guard let frame = arView?.session.currentFrame,
-                  case .normal = frame.camera.trackingState else { return }
-            let c = frame.camera.transform.columns.3
-            let p = SIMD3<Float>(c.x, c.y - Self.dropBelowPhone, c.z)
-            if let last = lastDrop, simd_distance(last, p) < Self.dropSpacing { return }
-            dropDot(at: p)
+            // GO -> STOP: it comes alive. STOP -> GO: snap back and keep growing.
+            if wasTrailing && !status.trailing {
+                caterpillar.startCrawling()
+                status.crawling = caterpillar.crawling
+            } else if !wasTrailing && status.trailing {
+                caterpillar.stopCrawling()
+                status.crawling = false
+                lastDrop = caterpillar.path.last
+            }
+            wasTrailing = status.trailing
+
+            if status.trailing, let frame = arView?.session.currentFrame,
+               case .normal = frame.camera.trackingState,
+               caterpillar.count < Self.maxSegments {
+                let c = frame.camera.transform.columns.3
+                let p = SIMD3<Float>(c.x, c.y - Self.dropBelowPhone, c.z)
+                if lastDrop == nil || simd_distance(lastDrop!, p) >= Caterpillar.spacing {
+                    status.lastChakra = caterpillar.grow(at: p)
+                    status.trailCount = caterpillar.count
+                    lastDrop = p
+                }
+            }
+
+            caterpillar.update(time: time, deltaTime: deltaTime)
         }
 
-        private func beat(deltaTime: Double) {
-            time += deltaTime
+        private func beat() {
             let bpm = 72.0
             let phase = (time * bpm / 60).truncatingRemainder(dividingBy: 1)
             let lub = exp(-pow((phase - 0.10) / 0.05, 2))
             let dub = 0.6 * exp(-pow((phase - 0.30) / 0.05, 2))
             let s = Float(1 + 0.08 * (lub + dub))
             heart?.scale = SIMD3<Float>(repeating: s)
-        }
-
-        // MARK: trail
-
-        private func dropDot(at p: SIMD3<Float>) {
-            guard let arView, status.trailCount < Self.maxDots else { return }
-            if trailAnchor == nil {
-                let a = AnchorEntity(world: SIMD3<Float>(0, 0, 0))
-                arView.scene.addAnchor(a)
-                trailAnchor = a
-            }
-            let n = status.trailCount
-            let chakra = chakras[n % chakras.count]
-            let solid = ModelEntity(mesh: chakra.mesh, materials: [chakra.material])
-            solid.position = p
-            solid.orientation = simd_quatf(angle: Float(n) * 0.9, axis: SIMD3<Float>(0, 1, 0))
-            trailAnchor?.addChild(solid)
-            lastDrop = p
-            status.trailCount = n + 1
-            status.lastChakra = chakra.name
-        }
-
-        private func clearTrail() {
-            trailAnchor?.removeFromParent()
-            trailAnchor = nil
-            lastDrop = nil
-            status.trailCount = 0
-            status.lastChakra = ""
         }
 
         // MARK: input + tracking

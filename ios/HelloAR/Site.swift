@@ -131,6 +131,31 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
     var onStatus: ((String) -> Void)?
     var onRestart: (() -> Void)?
     var onNudged: (() -> Void)?
+    var onAnchor: ((AnchorEntity) -> Void)?
+    var onOcclusion: ((String) -> Void)?
+
+    func toSite(_ world: SIMD3<Float>) -> SIMD3<Float>? {
+        anchor?.convert(position: world, from: nil)
+    }
+
+    private func addOcclusion(_ config: ARConfiguration, people: Bool, mesh: Bool) {
+        guard let arView else { return }
+        var parts: [String] = []
+        if people {
+            config.frameSemantics.insert(.personSegmentationWithDepth)
+            parts.append("people ✓")
+        } else {
+            parts.append("people ✗")
+        }
+        if mesh {
+            arView.environment.sceneUnderstanding.options.insert(.occlusion)
+            parts.append("lidar mesh ✓")
+        } else {
+            arView.environment.sceneUnderstanding.options.remove(.occlusion)
+            parts.append("lidar mesh ✗")
+        }
+        onOcclusion?(parts.joined(separator: " · "))
+    }
 
     private var site: SiteFile?
     private var model: Entity?
@@ -283,6 +308,13 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         mode = "geo"
         let config = ARGeoTrackingConfiguration()
         config.planeDetection = [.horizontal]
+        let people = ARGeoTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth)
+        var mesh = false
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+            config.sceneReconstruction = .mesh
+            mesh = true
+        }
+        addOcclusion(config, people: people, mesh: mesh)
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         onRestart?()
         let ga = ARGeoAnchor(coordinate: site.centre)
@@ -292,6 +324,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         loadOffset()
         arView.scene.addAnchor(a)
         geoAnchor = ga; anchor = a
+        onAnchor?(a)
         onStatus?("\(site.name): Apple location anchor, localizing… (point at the buildings)")
     }
 
@@ -321,6 +354,10 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.horizontal]
         config.worldAlignment = .gravityAndHeading
+        let people = ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth)
+        let mesh = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+        if mesh { config.sceneReconstruction = .mesh }
+        addOcclusion(config, people: people, mesh: mesh)
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         onRestart?()
         onStatus?("\(site.name): GPS + compass (\(reason)), waiting for a fix…")
@@ -339,6 +376,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
             let a = AnchorEntity(world: at)
             a.addChild(model)
             loadOffset()
+            onAnchor?(a)
             arView.scene.addAnchor(a)
             anchor = a
         } else {

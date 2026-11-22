@@ -53,12 +53,16 @@ final class Walker {
         if simd_length(want) > 1e-3 {
             facing = simd_normalize(facing + (simd_normalize(want) - facing) * min(1, 4 * dt))
         }
-        let up = SIMD3<Float>(0, 1, 0)
         let fwd = simd_normalize(SIMD3(facing.x, 0, facing.z))
-        let left = simd_cross(up, fwd)
+        return pose(at: pos, forward: fwd, phase: phase, amount: amount)
+    }
 
+    func pose(at pos: SIMD3<Float>, forward fwd: SIMD3<Float>, phase: Float, amount: Float)
+        -> (joints: [String: SIMD3<Float>], head: simd_float4x4) {
+        let up = SIMD3<Float>(0, 1, 0)
+        let left = simd_cross(up, fwd)
         var joints: [String: SIMD3<Float>] = [:]
-        for (name, l) in posed() {
+        for (name, l) in posed(phase: phase, amount: amount) {
             joints[name] = pos + left * l.x + up * l.y + fwd * l.z
         }
         var head = simd_float4x4(SIMD4(left, 0), SIMD4(up, 0), SIMD4(fwd, 0), SIMD4(pos, 1))
@@ -76,9 +80,8 @@ final class Walker {
         return path[lo] + (path[hi] - path[lo]) * t
     }
 
-    private func posed() -> [String: SIMD3<Float>] {
+    private func posed(phase: Float, amount a: Float) -> [String: SIMD3<Float>] {
         var j = rest
-        let a = amount
         func swing(_ v: SIMD3<Float>, _ th: Float) -> SIMD3<Float> {
             SIMD3(v.x, v.y * cos(th) + v.z * sin(th), -v.y * sin(th) + v.z * cos(th))
         }

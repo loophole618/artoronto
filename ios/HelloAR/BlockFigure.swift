@@ -8,7 +8,7 @@ import os
 let appLog = Logger(subsystem: "com.loophole618.artoronto", category: "app")
 
 final class BlockFigure {
-    let root = AnchorEntity(world: SIMD3<Float>(0, 0, 0))
+    let root: Entity
 
     enum Placement: String { case beside = "BESIDE", on = "ON" }
     var placement: Placement = .beside
@@ -88,7 +88,8 @@ final class BlockFigure {
         "right_upLeg_joint", "right_leg_joint", "right_foot_joint", "right_toes_joint",
     ]
 
-    init() {
+    init(anchored: Bool = true) {
+        root = anchored ? AnchorEntity(world: SIMD3<Float>(0, 0, 0)) : Entity()
         let cream = UIColor(red: 1.00, green: 0.92, blue: 0.75, alpha: 1)
         let coral = UIColor(red: 1.00, green: 0.42, blue: 0.32, alpha: 1)
         let teal = UIColor(red: 0.15, green: 0.70, blue: 0.75, alpha: 1)

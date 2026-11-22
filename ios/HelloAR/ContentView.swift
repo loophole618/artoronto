@@ -34,6 +34,16 @@ final class AppState: ObservableObject {
     var pick = Pick.site
     @Published var liveFPS = 1.0
 
+    @Published var procession = true
+    @Published var procCount = 5
+    @Published var procSpacing: Float = 1.5
+    @Published var procSpeed: Float = 0.9
+    @Published var walkText = "none (GO, walk, STOP with a site loaded)"
+    @Published var occlusion = ""
+    var avatarModel: AvatarModel?
+    var avatarVersion = 0
+    var walkPoints: [SIMD3<Float>] = []
+
     struct Loupe {
         let image: CGImage
         let scale: CGFloat
@@ -52,6 +62,7 @@ final class AppState: ObservableObject {
     let look = LookClient()
     weak var arView: ARView?
     var siteFile: SiteFile?
+    var forgetWalk = false
 }
 
 struct ContentView: View {
@@ -151,6 +162,17 @@ struct ContentView: View {
             Toggle("Figure follows me", isOn: $state.follower)
             Toggle("Wear avatar", isOn: $state.wear)
             Toggle("Heart", isOn: $state.heart)
+            Toggle("Procession", isOn: $state.procession)
+            Picker("Figures", selection: $state.procCount) {
+                ForEach([1, 3, 5, 8], id: \.self) { Text("\($0) figures").tag($0) }
+            }
+            Picker("Spacing", selection: $state.procSpacing) {
+                ForEach([Float(1.0), 1.5, 2.0, 3.0], id: \.self) { Text(String(format: "%.1f m apart", $0)).tag($0) }
+            }
+            Picker("Speed", selection: $state.procSpeed) {
+                ForEach([Float(0.6), 0.9, 1.2], id: \.self) { Text(String(format: "%.1f m/s", $0)).tag($0) }
+            }
+            Button("Forget saved walk") { state.walkPoints = []; state.walkText = "cleared"; state.clearRequests += 1; state.forgetWalk = true }
             Picker("LIVE frames", selection: $state.liveFPS) {
                 Text("LIVE 0.5 / s").tag(0.5)
                 Text("LIVE 1 / s").tag(1.0)
@@ -176,6 +198,8 @@ struct ContentView: View {
                 Text("tracking: \(state.tracking)")
                 Text("caterpillar: \(state.trailCount) · \(streetText)")
                 Text("site: \(state.site)")
+                Text("walk: \(state.walkText)")
+                if !state.occlusion.isEmpty { Text("occlusion: \(state.occlusion)") }
             } else {
                 Text(ARBodyTrackingConfiguration.isSupported ? "body: \(state.body)" : "body tracking not supported on this phone")
             }
@@ -205,6 +229,7 @@ struct ContentView: View {
          "caterpillar": "\(state.trailCount) · \(streetText)", "follower": "\(state.follower)",
          "body": state.body, "placement": state.placement.rawValue, "size": "\(state.size)",
          "occlude": "\(state.occlude)", "wear": "\(state.wear)", "avatar": state.avatar,
+         "walk": state.walkText, "occlusion": state.occlusion,
          "build": BuildInfo.label]
     }
 
@@ -240,6 +265,8 @@ struct ContentView: View {
             let model = try AvatarModel.load(url: url)
             state.figure.dress(with: model)
             state.walker.useSkeleton(from: model)
+            state.avatarModel = model
+            state.avatarVersion += 1
             let n = state.figure.wornPartCount
             state.avatar = n > 0 ? "\(label) · \(n) parts" : "\(label): no body parts found"
         } catch {
@@ -267,10 +294,16 @@ struct ARViewContainer: UIViewRepresentable {
         c.heartAnchor = heartAnchor
         c.heart = heart
         arView.scene.addAnchor(c.caterpillar.root)
-        arView.scene.addAnchor(state.figure.root)
+        if let a = state.figure.root as? AnchorEntity { arView.scene.addAnchor(a) }
 
         state.placer.onStatus = { text in DispatchQueue.main.async { state.site = text } }
         state.placer.onRestart = { state.trailing = false; state.clearRequests += 1 }
+        state.placer.onAnchor = { anchor in
+            c.procession.root.removeFromParent()
+            anchor.addChild(c.procession.root)
+            c.loadWalk()
+        }
+        state.placer.onOcclusion = { text in DispatchQueue.main.async { state.occlusion = text } }
         state.placer.arView = arView
         state.placer.onNudged = { [weak arView] in
             arView?.snapshot(saveToHDR: false) { image in
@@ -297,6 +330,10 @@ struct ARViewContainer: UIViewRepresentable {
         var heart: Entity?
         var updates: Cancellable?
         let caterpillar = Caterpillar()
+        let procession = Procession()
+        private var builtCount = -1
+        private var builtVersion = -1
+        private var lastWalkPoint: SIMD3<Float>?
         private var mode: AppState.Mode?
         private var time: Double = 0
         private var lastDrop: SIMD3<Float>?
@@ -360,7 +397,10 @@ struct ARViewContainer: UIViewRepresentable {
             if wasTrailing && !state.trailing {
                 caterpillar.startCrawling()
                 state.crawling = caterpillar.crawling
+                finishWalk()
             } else if !wasTrailing && state.trailing {
+                state.walkPoints = []
+                lastWalkPoint = nil
                 caterpillar.stopCrawling()
                 state.crawling = false
                 lastDrop = caterpillar.path.last
@@ -371,6 +411,7 @@ struct ARViewContainer: UIViewRepresentable {
             let cam = SIMD3<Float>(c.x, c.y, c.z)
             if case .normal = frame.camera.trackingState {
                 walker.record(floor: SIMD3(cam.x, cam.y - Self.phoneHeight, cam.z))
+                if state.trailing { recordWalk(camera: cam, frame: frame) }
                 if state.trailing, caterpillar.count < Self.maxSegments {
                     let p = SIMD3<Float>(cam.x, cam.y - Self.dropBelowPhone, cam.z)
                     if lastDrop == nil || simd_distance(lastDrop!, p) >= Caterpillar.spacing {
@@ -381,6 +422,7 @@ struct ARViewContainer: UIViewRepresentable {
                 }
             }
             caterpillar.update(time: time, deltaTime: dt)
+            updateProcession(dt: Float(dt))
             state.placer.nudgeTick(camera: cam)
 
             if state.follower, let pose = walker.step(dt: Float(dt), camera: cam) {
@@ -388,6 +430,67 @@ struct ARViewContainer: UIViewRepresentable {
             } else if !state.follower {
                 figure.root.isEnabled = false
             }
+        }
+
+        private func walkKey() -> String { "walk:" + (state.siteFile?.name ?? "") }
+
+        private func floorBelow(_ cam: SIMD3<Float>) -> Float {
+            guard let session = arView?.session else { return cam.y - Self.phoneHeight }
+            let q = ARRaycastQuery(origin: cam, direction: SIMD3(0, -1, 0), allowing: .estimatedPlane, alignment: .horizontal)
+            if let hit = session.raycast(q).first {
+                let y = hit.worldTransform.columns.3.y
+                if cam.y - y > 0.4 && cam.y - y < 2.4 { return y }
+            }
+            return cam.y - Self.phoneHeight
+        }
+
+        private func recordWalk(camera cam: SIMD3<Float>, frame: ARFrame) {
+            guard state.siteFile != nil else { return }
+            let floor = SIMD3<Float>(cam.x, floorBelow(cam), cam.z)
+            if let last = lastWalkPoint, simd_distance(last, floor) < 0.1 { return }
+            lastWalkPoint = floor
+            if let local = state.placer.toSite(floor) { state.walkPoints.append(local) }
+            state.walkText = String(format: "recording · %d points", state.walkPoints.count)
+        }
+
+        private func finishWalk() {
+            guard state.siteFile != nil, state.walkPoints.count >= 10 else { return }
+            procession.setPath(state.walkPoints)
+            let flat = state.walkPoints.flatMap { [Double($0.x), Double($0.y), Double($0.z)] }
+            UserDefaults.standard.set(flat, forKey: walkKey())
+            state.walkText = String(format: "%.1f m saved to the site", procession.length)
+        }
+
+        func loadWalk() {
+            let flat = UserDefaults.standard.array(forKey: walkKey()) as? [Double] ?? []
+            guard flat.count >= 30 else { return }
+            var pts: [SIMD3<Float>] = []
+            var i = 0
+            while i + 2 < flat.count { pts.append(SIMD3(Float(flat[i]), Float(flat[i + 1]), Float(flat[i + 2]))); i += 3 }
+            state.walkPoints = pts
+            procession.setPath(pts)
+            DispatchQueue.main.async {
+                self.state.walkText = String(format: "%.1f m, restored from last time", self.procession.length)
+            }
+        }
+
+        private func updateProcession(dt: Float) {
+            if state.forgetWalk {
+                state.forgetWalk = false
+                UserDefaults.standard.removeObject(forKey: walkKey())
+                procession.clear()
+            }
+            procession.root.isEnabled = state.procession
+            guard state.procession else { return }
+            if builtCount != state.procCount || builtVersion != state.avatarVersion {
+                procession.count = state.procCount
+                procession.rebuild(model: state.avatarModel)
+                builtCount = state.procCount
+                builtVersion = state.avatarVersion
+            }
+            procession.spacing = state.procSpacing
+            procession.speed = state.procSpeed
+            procession.update(dt: dt, wear: state.wear)
         }
 
         func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {

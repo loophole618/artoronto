@@ -25,6 +25,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiredDeviceCapabilities: [arkit]
         NSCameraUsageDescription: "ARToronto uses the camera to place the sphere in the space around you."
+        NSLocationWhenInUseUsageDescription: "ARToronto uses your location to place site overlays on the real street."
         ARTBuildLabel: "$(ART_BUILD_LABEL)"
     settings:
       base:

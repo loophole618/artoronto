@@ -2,8 +2,9 @@ import SwiftUI
 import RealityKit
 import ARKit
 import Combine
+import UniformTypeIdentifiers
 
-// Hello AR, build 6: the green dragon (build 5's caterpillar, 3.5x, all green).
+// Hello AR, build 7: the green dragon + a site overlay (SITE: a zoning volume placed by location, see Site.swift).
 // - The heart: a translucent green sphere (Anahata), 1 m across, 1.5 m ahead,
 //   beating at 72 bpm. Two shells (outside + inside) so it renders cleanly
 //   from both sides. Tap empty space to re-place it 1.5 m in front of you.
@@ -22,6 +23,9 @@ final class ARStatus: ObservableObject {
     @Published var lastChakra = ""
     @Published var crawling = false
     var clearRequests = 0
+    @Published var site = "none (SITE ⇩ to pick a site file)"
+    @Published var pickingSite = false
+    let placer = SitePlacer()
 }
 
 struct ContentView: View {
@@ -50,9 +54,18 @@ struct ContentView: View {
                     } label: {
                         Text("CLEAR")
                             .font(.system(size: 17, weight: .bold, design: .rounded))
-                            .frame(width: 96, height: 76)
+                            .frame(width: 84, height: 76)
                             .foregroundStyle(.white)
                             .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 22))
+                    }
+                    Button {
+                        status.pickingSite = true
+                    } label: {
+                        Text("SITE ⇩")
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .frame(width: 84, height: 76)
+                            .foregroundStyle(.white)
+                            .background(Color.red.opacity(0.75), in: RoundedRectangle(cornerRadius: 22))
                     }
                 }
 
@@ -60,6 +73,7 @@ struct ContentView: View {
                     Text("ARToronto · hello AR").font(.headline)
                     Text("tracking: \(status.tracking)")
                     Text("caterpillar: \(status.trailCount) · \(stateText)")
+                    Text("site: \(status.site)")
                     Text("build \(BuildInfo.label)")
                 }
                 .font(.system(.footnote, design: .monospaced))
@@ -70,6 +84,30 @@ struct ContentView: View {
             }
             .padding(.horizontal)
             .padding(.bottom, 24)
+        }
+        .fileImporter(isPresented: $status.pickingSite, allowedContentTypes: [.json, .data, .item]) { result in
+            guard case .success(let url) = result else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            try? FileManager.default.removeItem(at: Self.savedSite)
+            try? FileManager.default.copyItem(at: url, to: Self.savedSite)
+            loadSite(from: FileManager.default.fileExists(atPath: Self.savedSite.path) ? Self.savedSite : url)
+        }
+        .onAppear {
+            if FileManager.default.fileExists(atPath: Self.savedSite.path) { loadSite(from: Self.savedSite) }
+        }
+    }
+
+    private static var savedSite: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("site.json")
+    }
+
+    private func loadSite(from url: URL) {
+        do {
+            let site = try JSONDecoder().decode(SiteFile.self, from: Data(contentsOf: url))
+            status.placer.load(site)
+        } catch {
+            status.site = "couldn't read \(url.lastPathComponent)"
         }
     }
 
@@ -105,6 +143,10 @@ struct ARViewContainer: UIViewRepresentable {
         coordinator.heart = heart
 
         arView.scene.addAnchor(coordinator.caterpillar.root)
+
+        status.placer.onStatus = { text in DispatchQueue.main.async { status.site = text } }
+        status.placer.onRestart = { status.trailing = false; status.clearRequests += 1 }
+        status.placer.arView = arView
 
         coordinator.updates = arView.scene.subscribe(to: SceneEvents.Update.self) { event in
             coordinator.update(deltaTime: event.deltaTime)
@@ -221,6 +263,10 @@ struct ARViewContainer: UIViewRepresentable {
             let world = camera.transform * offset
             anchor.transform = Transform(matrix: world)
             anchor.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+        }
+
+        func session(_ session: ARSession, didChange geoTrackingStatus: ARGeoTrackingStatus) {
+            status.placer.geoTrackingChanged(geoTrackingStatus)
         }
 
         func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {

@@ -175,8 +175,8 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         let toTarget = target - camera
         guard simd_length(toTarget) > 0.5 else { return }
         let angle = acos(min(1, abs(simd_dot(d1, simd_normalize(toTarget))))) * 180 / .pi
-        let verdict = angle < 3 ? "keep walking along the house" : (angle < 10 ? "ok, more is better" : "good, tap the \(b.name) again")
-        onStatus?(String(format: "NUDGE: angle %.0f° · %@", angle, verdict))
+        let verdict = angle < 3 ? "keep walking along the house" : (angle < 10 ? "ok, more is better" : "good, tap the \(b.name) now")
+        onStatus?(String(format: "NUDGE sighting 2 of 2 · angle %.0f° · %@", angle, verdict))
     }
 
     private var offsetKey: String { "siteOffset:" + (site?.name ?? "") }
@@ -194,7 +194,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         nudging = true
         rays = []
         clearSightLine()
-        onStatus?("NUDGE: tap the real \(b.name) (the yellow ball is where the data puts it)")
+        onStatus?("NUDGE sighting 1 of 2: tap the real \(b.name) (the yellow ball is where the data puts it)")
     }
 
     func resetNudge() {
@@ -211,7 +211,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         rays.append((origin, simd_normalize(direction)))
         guard rays.count == 2 else {
             showSightLine(from: origin, along: simd_normalize(direction))
-            onStatus?("NUDGE: now walk along the house; the angle shows here")
+            onStatus?("NUDGE sighting 1 of 2 ✓ · walk 3-5 m along the house, then tap the SAME \(b.name) again")
             return
         }
         clearSightLine()

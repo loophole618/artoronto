@@ -459,10 +459,11 @@ struct ARViewContainer: UIViewRepresentable {
             let holder = state.splat.holder
             holder.removeFromParent()
             if let a = splatAnchor { arView.scene.removeAnchor(a); splatAnchor = nil }
-            if let start = procession.start, procession.root.parent != nil {
+            if !state.splat.inFront, let start = procession.start, procession.root.isAnchored {
                 procession.root.addChild(holder)
                 holder.position = start.point
                 holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: start.direction)
+                state.splat.note("placed at the start of the saved walk")
             } else {
                 var fwd = -SIMD3<Float>(frame.camera.transform.columns.2.x, 0, frame.camera.transform.columns.2.z)
                 fwd = simd_length(fwd) > 1e-4 ? simd_normalize(fwd) : SIMD3(0, 0, -1)
@@ -473,6 +474,7 @@ struct ARViewContainer: UIViewRepresentable {
                 a.addChild(holder)
                 holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: -fwd)
                 splatAnchor = a
+                state.splat.note("placed 2.5 m in front of you")
             }
             state.splat.placed()
         }

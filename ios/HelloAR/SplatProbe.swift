@@ -46,8 +46,26 @@ final class SplatProbe {
         }
     }
 
-    func placed() { needsPlacement = false }
-    func replace() { if points != nil { needsPlacement = true } }
+    private(set) var inFront = false
+    private var placement = ""
+    private var stage = ""
+
+    func placed() { needsPlacement = false; inFront = false }
+    func replace() { if points != nil { inFront = true; needsPlacement = true } }
+
+    func note(_ where_: String) {
+        placement = where_
+        appLog.notice("app: splat \(where_, privacy: .public)")
+        onStatus?("\(name): \(where_)")
+    }
+
+    private func step(_ s: String) {
+        guard s != stage else { return }
+        stage = s
+        appLog.notice("app: splat stage \(s, privacy: .public)")
+        let text = "\(name): \(s) · \(placement)"
+        DispatchQueue.main.async { self.onStatus?(text) }
+    }
 
     func postProcess(_ ctx: ARView.PostProcessContext) {
         let target = ctx.targetColorTexture
@@ -55,8 +73,8 @@ final class SplatProbe {
             blit.copy(from: ctx.sourceColorTexture, to: target)
             blit.endEncoding()
         }
-        guard visible, let points, let arView, let frame = arView.session.currentFrame,
-              holder.isAnchored else { return }
+        guard visible, let points, let arView, let frame = arView.session.currentFrame else { return }
+        guard holder.isAnchored else { step("waiting: its anchor isn't placed yet"); return }
 
         if renderer == nil || rendererFormat != target.pixelFormat {
             do {
@@ -66,8 +84,9 @@ final class SplatProbe {
                 renderer = r
                 rendererFormat = target.pixelFormat
                 chunkAdded = false
+                step("renderer ready (\(target.pixelFormat.rawValue), \(target.width)x\(target.height))")
             } catch {
-                onStatus?("splat renderer failed: \(error.localizedDescription)")
+                step("renderer failed: \(error.localizedDescription)")
                 return
             }
         }
@@ -76,11 +95,17 @@ final class SplatProbe {
             chunkAdded = true
             let device = ctx.device
             Task {
-                if let chunk = try? SplatChunk(device: device, from: points) { await renderer.addChunk(chunk) }
+                do {
+                    let chunk = try SplatChunk(device: device, from: points)
+                    await renderer.addChunk(chunk)
+                    self.step("chunk added")
+                } catch {
+                    self.step("chunk failed: \(error.localizedDescription)")
+                }
             }
             return
         }
-        guard renderer.isReadyToRender else { return }
+        guard renderer.isReadyToRender else { step("renderer busy"); return }
 
         if overlay == nil || overlay!.width != target.width || overlay!.height != target.height
             || overlay!.pixelFormat != target.pixelFormat {
@@ -91,7 +116,7 @@ final class SplatProbe {
             overlay = ctx.device.makeTexture(descriptor: d)
             composite = Self.makeComposite(device: ctx.device, format: target.pixelFormat)
         }
-        guard let overlay, let composite else { return }
+        guard let overlay, let composite else { step(composite == nil ? "composite shader failed" : "no overlay texture"); return }
 
         let size = arView.bounds.size
         let projection = frame.camera.projectionMatrix(for: .portrait, viewportSize: size, zNear: 0.05, zFar: 200)
@@ -106,8 +131,9 @@ final class SplatProbe {
             let drew = try renderer.render(viewports: [vd], colorTexture: overlay, colorStoreAction: .store,
                                            depthTexture: nil, rasterizationRateMap: nil, renderTargetArrayLength: 0,
                                            to: ctx.commandBuffer)
-            guard drew else { return }
+            guard drew else { step("render skipped (sorting?)"); return }
         } catch {
+            step("render error: \(error.localizedDescription)")
             return
         }
 
@@ -129,7 +155,8 @@ final class SplatProbe {
         if now - lastReport > 1, !frameTimes.isEmpty {
             lastReport = now
             let fps = Double(frameTimes.count) / frameTimes.reduce(0, +)
-            let text = String(format: "%@ · %d splats · %.0f fps · sort %.0f ms", name, points.count, fps, sortMs)
+            let text = String(format: "%@ · %d splats · %.0f fps · sort %.0f ms · %@", name, points.count, fps, sortMs, placement)
+            appLog.notice("app: splat \(text, privacy: .public)")
             DispatchQueue.main.async { self.onStatus?(text) }
         }
     }

@@ -159,6 +159,9 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
 
     private var site: SiteFile?
     private var model: Entity?
+    var siteVisible = true {
+        didSet { if siteVisible != oldValue { model?.isEnabled = siteVisible } }
+    }
     private var anchor: AnchorEntity?
     private var geoAnchor: ARGeoAnchor?
     private let location = CLLocationManager()
@@ -283,6 +286,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
         self.site = site
         clear()
         model = SiteModel.make(site)
+        model?.isEnabled = siteVisible
         location.delegate = self
         location.desiredAccuracy = kCLLocationAccuracyBest
         location.requestWhenInUseAuthorization()

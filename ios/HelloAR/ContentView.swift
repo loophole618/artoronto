@@ -35,6 +35,9 @@ final class AppState: ObservableObject {
     @Published var liveFPS = 1.0
 
     @Published var procession = true
+    @Published var siteVisible = UserDefaults.standard.object(forKey: "siteVisible") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(siteVisible, forKey: "siteVisible") }
+    }
     @Published var capturedWalk = true
     @Published var procCount = 5
     @Published var procSpacing: Float = 1.5
@@ -214,6 +217,7 @@ struct ContentView: View {
                 Button("Load avatar…") { state.pick = .avatar; state.picking = true }
             }
             Menu("Site") {
+                Toggle("Show site (box, lot line, peak)", isOn: $state.siteVisible)
                 Button("Load site…") { state.pick = .site; state.picking = true }
                 Button("Reset nudge") { state.placer.resetNudge() }
             }
@@ -483,6 +487,7 @@ struct ARViewContainer: UIViewRepresentable {
             updateProcession(dt: Float(dt))
             state.placer.nudgeTick(camera: cam)
             state.splat.visible = state.splatVisible
+            state.placer.siteVisible = state.siteVisible
             if state.splat.needsPlacement { placeSplat(camera: cam) }
 
             if state.follower, let pose = walker.step(dt: Float(dt), camera: cam) {

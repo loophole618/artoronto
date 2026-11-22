@@ -20,9 +20,10 @@ final class Caterpillar {
     private var loop: [SIMD3<Float>] = []
     private var crawl: Double = 0          // how far the body has slid along the loop, in segments
     private(set) var crawling = false
-    private lazy var chakras = Chakra.all()
+    private lazy var chakras = Chakra.all(radius: 0.035 * Self.size)
 
-    static let spacing: Float = 0.15       // metres between segments
+    static let size: Float = 3.5           // build 6: segments 3.5x build 5 (~25 cm across)
+    static let spacing: Float = 0.25       // metres between segments (they just touch on the swell)
     static let waveHz = 0.7                // the swell
     static let crawlSpeed = 2.2            // segments per second at the top of a surge
 
@@ -77,17 +78,18 @@ final class Caterpillar {
             let phase = omega * t - 0.55 * Double(i)          // travels tail -> head
             let swell = Float(pow(max(0, sin(phase)), 2))     // 0...1
             var p = crawling ? point(at: Double(i) + crawl) : path[i]
-            p.y += 0.05 * swell                               // the hump
+            let k = Self.size / 2                             // motion grows with the body, a bit less than size
+            p.y += 0.05 * k * swell                           // the hump
             var s = SIMD3<Float>(repeating: 1 + 0.35 * swell)
             var q = simd_quatf(angle: tf * 0.6 + fi * 0.9, axis: SIMD3<Float>(0, 1, 0))
 
             switch seg.kind {
             case 1: // water: bobs
-                p.y += 0.012 * sinf(2.2 * tf + fi)
+                p.y += 0.012 * k * sinf(2.2 * tf + fi)
             case 2: // fire: flickers
                 s *= 1 + 0.10 * sinf(13 * tf + fi) * sinf(7.3 * tf + 2 * fi)
             case 3: // air: drifts up and down, slowly
-                p.y += 0.03 * sinf(0.8 * tf + 0.5 * fi)
+                p.y += 0.03 * k * sinf(0.8 * tf + 0.5 * fi)
             case 4: // ether: tumbles on every axis
                 let axis = simd_normalize(SIMD3<Float>(1, 0.4, 0.7))
                 q = q * simd_quatf(angle: 1.3 * tf + fi, axis: axis)

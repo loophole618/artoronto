@@ -3,7 +3,7 @@ import RealityKit
 import ARKit
 import Combine
 
-// Hello AR, build 5: the caterpillar crawls.
+// Hello AR, build 6: the green dragon (build 5's caterpillar, 3.5x, all green).
 // - The heart: a translucent green sphere (Anahata), 1 m across, 1.5 m ahead,
 //   beating at 72 bpm. Two shells (outside + inside) so it renders cleanly
 //   from both sides. Tap empty space to re-place it 1.5 m in front of you.
@@ -129,7 +129,7 @@ struct ARViewContainer: UIViewRepresentable {
         private var lastDrop: SIMD3<Float>?
         private var handledClears = 0
         private var wasTrailing = false
-        private static let dropBelowPhone: Float = 0.10 // so solids don't sit on the lens
+        private static let dropBelowPhone: Float = 0.35 // big segments: lay them low, off the lens
         private static let maxSegments = 800
 
         init(status: ARStatus) { self.status = status }

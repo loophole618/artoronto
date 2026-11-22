@@ -10,16 +10,20 @@ import simd
 // Colour = the petal colours from art-studio's build_chakras.py (the texts,
 // not the modern rainbow), so the walk-spine matches the chakra spheres.
 enum Chakra {
-    static func all() -> [(name: String, mesh: MeshResource, material: RealityKit.Material)] {
-        let r: Float = 0.035   // circumradius, metres (solids ~7 cm across)
+    /// r = circumradius in metres. Build 6 ("dragon"): every chakra in green, dark
+    /// jade at the root to bright lime at the crown, so each 7-segment cycle reads
+    /// like a band of scales. The text petal colours (builds 4-5) were:
+    /// root (1,.03,.14) · sacral (1,.30,.02) · solar (.08,.28,1) · heart (1,.10,.08)
+    /// · throat (.58,.12,1) · Ajna (.90,.97,1) · crown (1,1,1).
+    static func all(radius r: Float = 0.035) -> [(name: String, mesh: MeshResource, material: RealityKit.Material)] {
         return [
-            ("Muladhara", MeshResource.generateBox(size: r * 1.15),        glow(1.00, 0.03, 0.14)),
-            ("Svadhisthana", icosahedron(radius: r),                      glow(1.00, 0.30, 0.02)),
-            ("Manipura", tetrahedronPointDown(radius: r * 1.15),          glow(0.08, 0.28, 1.00)),
-            ("Anahata", octahedron(radius: r),                            glow(1.00, 0.10, 0.08)),
-            ("Vishuddha", dodecahedron(radius: r),                        glow(0.58, 0.12, 1.00)),
-            ("Ajna", MeshResource.generateSphere(radius: r * 0.6),        glow(0.90, 0.97, 1.00)),
-            ("Sahasrara", MeshResource.generateCylinder(height: r * 0.18, radius: r), glow(1.00, 1.00, 1.00)),
+            ("Muladhara", MeshResource.generateBox(size: r * 1.15),        glow(0.04, 0.42, 0.16)),
+            ("Svadhisthana", icosahedron(radius: r),                      glow(0.08, 0.55, 0.20)),
+            ("Manipura", tetrahedronPointDown(radius: r * 1.15),          glow(0.12, 0.68, 0.24)),
+            ("Anahata", octahedron(radius: r),                            glow(0.18, 0.80, 0.28)),
+            ("Vishuddha", dodecahedron(radius: r),                        glow(0.32, 0.88, 0.30)),
+            ("Ajna", MeshResource.generateSphere(radius: r * 0.6),        glow(0.55, 0.95, 0.35)),
+            ("Sahasrara", MeshResource.generateCylinder(height: r * 0.18, radius: r), glow(0.75, 1.00, 0.45)),
         ]
     }
 
@@ -28,7 +32,7 @@ enum Chakra {
         var m = PhysicallyBasedMaterial()
         m.baseColor = .init(tint: c)
         m.emissiveColor = .init(color: c)
-        m.emissiveIntensity = 0.8
+        m.emissiveIntensity = 0.55   // a little lower than build 5, so the facets still read on big solids
         m.roughness = .init(floatLiteral: 0.35)
         m.metallic = .init(floatLiteral: 0.0)
         m.faceCulling = .none

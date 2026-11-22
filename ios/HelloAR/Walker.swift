@@ -8,6 +8,11 @@ final class Walker {
     static let stride: Float = 1.1
 
     private(set) var rest: [String: SIMD3<Float>] = Walker.defaultSkeleton
+    var captured = true
+
+    var cycleLength: Float {
+        captured ? GaitCMU.strideInHipHeights * (rest["hips_joint"]?.y ?? 0.8) : Walker.stride
+    }
 
     private var path: [SIMD3<Float>] = []
     private var cum: [Float] = []
@@ -44,7 +49,7 @@ final class Walker {
         s += ds
         let speed = dt > 0 ? ds / dt : 0
         amount += (min(speed / 1.0, 1) - amount) * min(1, 6 * dt)
-        phase += ds / Self.stride * 2 * .pi
+        phase += ds / cycleLength * 2 * .pi
 
         let pos = point(at: s)
         var want = point(at: s + 0.2) - point(at: max(0, s - 0.2))
@@ -62,7 +67,8 @@ final class Walker {
         let up = SIMD3<Float>(0, 1, 0)
         let left = simd_cross(up, fwd)
         var joints: [String: SIMD3<Float>] = [:]
-        for (name, l) in posed(phase: phase, amount: amount) {
+        let local = captured ? capturedPose(phase: phase, amount: amount) : posed(phase: phase, amount: amount)
+        for (name, l) in local {
             joints[name] = pos + left * l.x + up * l.y + fwd * l.z
         }
         var head = simd_float4x4(SIMD4(left, 0), SIMD4(up, 0), SIMD4(fwd, 0), SIMD4(pos, 1))
@@ -107,6 +113,48 @@ final class Walker {
         let bob = 0.025 * a * cos(2 * phase)
         for k in j.keys { j[k]!.y += bob }
         return j
+    }
+
+    private static let capturedBones: [(String, String, String)] = [
+        ("spine", "hips_joint", "neck_1_joint"), ("head", "neck_1_joint", "head_joint"),
+        ("lShoulder", "neck_1_joint", "left_arm_joint"), ("rShoulder", "neck_1_joint", "right_arm_joint"),
+        ("lUpperArm", "left_arm_joint", "left_forearm_joint"), ("lForearm", "left_forearm_joint", "left_hand_joint"),
+        ("rUpperArm", "right_arm_joint", "right_forearm_joint"), ("rForearm", "right_forearm_joint", "right_hand_joint"),
+        ("lPelvis", "hips_joint", "left_upLeg_joint"), ("rPelvis", "hips_joint", "right_upLeg_joint"),
+        ("lThigh", "left_upLeg_joint", "left_leg_joint"), ("lShin", "left_leg_joint", "left_foot_joint"),
+        ("lFoot", "left_foot_joint", "left_toes_joint"),
+        ("rThigh", "right_upLeg_joint", "right_leg_joint"), ("rShin", "right_leg_joint", "right_foot_joint"),
+        ("rFoot", "right_foot_joint", "right_toes_joint"),
+    ]
+
+    private func capturedPose(phase: Float, amount: Float) -> [String: SIMD3<Float>] {
+        let n = GaitCMU.frames
+        let per = 3 + 3 * GaitCMU.bones.count
+        var c = phase / (2 * .pi)
+        c -= c.rounded(.down)
+        let u = c * Float(n)
+        let f0 = Int(u) % n, f1 = (f0 + 1) % n
+        let w = u - Float(Int(u))
+        let d = GaitCMU.data
+        func vec(_ f: Int, _ k: Int) -> SIMD3<Float> {
+            SIMD3(d[f * per + k], d[f * per + k + 1], d[f * per + k + 2])
+        }
+        func at(_ k: Int) -> SIMD3<Float> { vec(f0, k) * (1 - w) + vec(f1, k) * w }
+        let hipH = rest["hips_joint"]?.y ?? 0.8
+        var j: [String: SIMD3<Float>] = [:]
+        let hip = at(0)
+        j["hips_joint"] = SIMD3(hip.x * hipH, hip.y * hipH, hip.z * hipH)
+        for (i, (name, from, to)) in Self.capturedBones.enumerated() {
+            _ = name
+            guard let a = j[from], let ra = rest[from], let rb = rest[to] else { continue }
+            var dir = at(3 + 3 * i)
+            dir = simd_length(dir) > 1e-5 ? simd_normalize(dir) : SIMD3(0, -1, 0)
+            j[to] = a + dir * simd_distance(ra, rb)
+        }
+        guard amount < 0.999 else { return j }
+        var out = rest
+        for (k, p) in j { if let r = rest[k] { out[k] = r + (p - r) * amount } }
+        return out
     }
 
     func useSkeleton(from model: AvatarModel) {

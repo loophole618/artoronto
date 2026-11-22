@@ -63,7 +63,7 @@ final class Procession {
             var fwd = point(at: s + 0.25) - point(at: s - 0.25)
             fwd.y = 0
             fwd = simd_length(fwd) > 1e-4 ? simd_normalize(fwd) : SIMD3(0, 0, -1)
-            let pose = gait.pose(at: point(at: s), forward: fwd, phase: s / Walker.stride * 2 * .pi, amount: 1)
+            let pose = gait.pose(at: point(at: s), forward: fwd, phase: s / gait.cycleLength * 2 * .pi, amount: 1)
             f.update(walker: pose.joints, headMatrix: pose.head)
         }
     }

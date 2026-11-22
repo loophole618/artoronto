@@ -35,6 +35,7 @@ final class AppState: ObservableObject {
     @Published var liveFPS = 1.0
 
     @Published var procession = true
+    @Published var capturedWalk = true
     @Published var procCount = 5
     @Published var procSpacing: Float = 1.5
     @Published var procSpeed: Float = 0.9
@@ -163,6 +164,7 @@ struct ContentView: View {
             Toggle("Wear avatar", isOn: $state.wear)
             Toggle("Heart", isOn: $state.heart)
             Toggle("Procession", isOn: $state.procession)
+            Toggle("Captured walk (CMU)", isOn: $state.capturedWalk)
             Picker("Figures", selection: $state.procCount) {
                 ForEach([1, 3, 5, 8], id: \.self) { Text("\($0) figures").tag($0) }
             }
@@ -488,6 +490,8 @@ struct ARViewContainer: UIViewRepresentable {
                 builtCount = state.procCount
                 builtVersion = state.avatarVersion
             }
+            procession.gait.captured = state.capturedWalk
+            walker.captured = state.capturedWalk
             procession.spacing = state.procSpacing
             procession.speed = state.procSpeed
             procession.update(dt: dt, wear: state.wear)

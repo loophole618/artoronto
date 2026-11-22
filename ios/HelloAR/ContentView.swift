@@ -64,6 +64,10 @@ final class AppState: ObservableObject {
     let splat = SplatProbe()
     @Published var splatText = ""
     @Published var splatVisible = true
+    let dragon = Dragon()
+    @Published var dragonMode = Dragon.Mode.auto
+    @Published var dragonText = ""
+    var fireRequests = 0
     weak var arView: ARView?
     var siteFile: SiteFile?
     var forgetWalk = false
@@ -159,6 +163,13 @@ struct ContentView: View {
                     button(state.wear ? "WEAR ✓" : "WEAR ✗", state.wear ? .pink : .gray) { state.wear.toggle() }
                 }
             }
+            HStack(spacing: 8) {
+                button("🐉 \(state.dragonMode.rawValue)", state.dragonMode == .off ? .gray : .orange) {
+                    let all = Dragon.Mode.allCases
+                    state.dragonMode = all[(all.firstIndex(of: state.dragonMode)! + 1) % all.count]
+                }
+                button("🔥 FIRE", .red) { state.fireRequests += 1 }
+            }
         }
     }
 
@@ -166,6 +177,12 @@ struct ContentView: View {
         Menu {
             Picker("Mode", selection: $state.mode) {
                 ForEach(AppState.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            Menu("Dragon") {
+                Picker("Dragon", selection: $state.dragonMode) {
+                    ForEach(Dragon.Mode.allCases, id: \.self) { Text("Dragon \($0.rawValue)").tag($0) }
+                }
+                Button("🔥 Fire") { state.fireRequests += 1 }
             }
             Menu("Splat") {
                 Button("Place splat here") { state.splat.replace() }
@@ -224,6 +241,7 @@ struct ContentView: View {
             } else {
                 Text(ARBodyTrackingConfiguration.isSupported ? "body: \(state.body)" : "body tracking not supported on this phone")
             }
+            if !state.dragonText.isEmpty { Text("dragon: \(state.dragonText)") }
             Text("avatar: \(state.avatar)")
             if !state.splatText.isEmpty { Text("splat: \(state.splatText)") }
             Text("ARToronto · build \(BuildInfo.label)")
@@ -252,6 +270,7 @@ struct ContentView: View {
          "body": state.body, "placement": state.placement.rawValue, "size": "\(state.size)",
          "occlude": "\(state.occlude)", "wear": "\(state.wear)", "avatar": state.avatar,
          "walk": state.walkText, "occlusion": state.occlusion, "splat": state.splatText,
+         "dragon": "\(state.dragonMode.rawValue) · \(state.dragonText)",
          "build": BuildInfo.label]
     }
 
@@ -317,6 +336,7 @@ struct ARViewContainer: UIViewRepresentable {
         c.heartAnchor = heartAnchor
         c.heart = heart
         arView.scene.addAnchor(c.caterpillar.root)
+        arView.scene.addAnchor(state.dragon.root)
         if let a = state.figure.root as? AnchorEntity { arView.scene.addAnchor(a) }
 
         state.placer.onStatus = { text in DispatchQueue.main.async { if state.site != text { state.site = text } } }
@@ -366,6 +386,10 @@ struct ARViewContainer: UIViewRepresentable {
         private var handledClears = 0
         private var wasTrailing = false
         private var lastHud: CFTimeInterval = 0
+        private var handledFire = 0
+        private var floorCache: (y: Float, at: Double) = (0, -1)
+        private var bodyLeader: (floor: SIMD3<Float>, head: SIMD3<Float>, at: Double)?
+        private var lastDragonText = ""
         private static let phoneHeight: Float = 1.4
         private static let dropBelowPhone: Float = 0.35
         private static let maxSegments = 800
@@ -381,6 +405,8 @@ struct ARViewContainer: UIViewRepresentable {
             figure.reset()
             walker.clear()
             caterpillar.clear()
+            state.dragon.reset()
+            bodyLeader = nil
             lastDrop = nil
             state.trailing = false
             state.trailCount = 0
@@ -410,6 +436,7 @@ struct ARViewContainer: UIViewRepresentable {
             figure.wear = state.wear
             heart?.isEnabled = mode == .street && state.heart
             beat()
+            updateDragon(dt: Float(dt))
             guard mode == .street, let frame = arView?.session.currentFrame else { return }
 
             if state.clearRequests != handledClears {
@@ -457,6 +484,29 @@ struct ARViewContainer: UIViewRepresentable {
                 figure.update(walker: pose.joints, headMatrix: pose.head)
             } else if !state.follower {
                 figure.root.isEnabled = false
+            }
+        }
+
+        private func updateDragon(dt: Float) {
+            let fire = state.fireRequests != handledFire
+            handledFire = state.fireRequests
+            guard let frame = arView?.session.currentFrame else { return }
+            let t = frame.camera.transform
+            let cam = SIMD3<Float>(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+            let fwd = -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
+            var leaderFloor: SIMD3<Float>, leaderHead: SIMD3<Float>, viewer: SIMD3<Float>?
+            if mode == .body, let b = bodyLeader, time - b.at < 1.5 {
+                leaderFloor = b.floor; leaderHead = b.head; viewer = cam
+            } else {
+                if time - floorCache.at > 0.3 { floorCache = (floorBelow(cam), time) }
+                leaderFloor = SIMD3(cam.x, floorCache.y, cam.z); leaderHead = cam; viewer = nil
+            }
+            state.dragon.update(dt: dt, mode: state.dragonMode, leaderFloor: leaderFloor, leaderHead: leaderHead,
+                                viewer: viewer, camera: cam, cameraForward: fwd, fire: fire)
+            let text = state.dragon.status
+            if text != lastDragonText {
+                lastDragonText = text
+                DispatchQueue.main.async { self.state.dragonText = text }
             }
         }
 
@@ -564,6 +614,22 @@ struct ARViewContainer: UIViewRepresentable {
             figure.cameraPosition = camPos
             figure.depthScale = 1
             figure.update(from: body, cameraRight: right)
+            if body.isTracked {
+                var feet: [Float] = []
+                for name in ["left_toes_joint", "right_toes_joint", "left_foot_joint", "right_foot_joint"] {
+                    if let m = body.skeleton.modelTransform(for: ARSkeleton.JointName(rawValue: name)) {
+                        feet.append((body.transform * m).columns.3.y)
+                    }
+                }
+                let hips = body.transform.columns.3
+                var head = SIMD3<Float>(hips.x, hips.y + 0.6, hips.z)
+                if let m = body.skeleton.modelTransform(for: .head) {
+                    let w = (body.transform * m).columns.3
+                    head = SIMD3(w.x, w.y, w.z)
+                }
+                let floorY = (feet.min() ?? hips.y - 0.9) - 0.03
+                bodyLeader = (SIMD3(hips.x, floorY, hips.z), head, time)
+            }
 
             let now = CACurrentMediaTime()
             guard now - lastHud > 0.2 else { return }

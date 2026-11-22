@@ -90,15 +90,30 @@ final class VoiceNote: ObservableObject {
         try? session.setActive(true)
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
-        if recognizer?.supportsOnDeviceRecognition == true { req.requiresOnDeviceRecognition = true }
         request = req
+        guard let recognizer, recognizer.isAvailable else {
+            text = "(speech recognizer not available)"
+            appLog.notice("app: voice recognizer unavailable")
+            return
+        }
         let input = engine.inputNode
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in req.append(buffer) }
         engine.prepare()
-        try? engine.start()
-        task = recognizer?.recognitionTask(with: req) { result, _ in
-            if let result { DispatchQueue.main.async { self.text = result.bestTranscription.formattedString } }
+        do { try engine.start() } catch {
+            text = "(microphone didn't start: \(error.localizedDescription))"
+            appLog.notice("app: voice engine failed \(String(describing: error), privacy: .public)")
+            return
+        }
+        appLog.notice("app: voice listening")
+        task = recognizer.recognitionTask(with: req) { result, error in
+            DispatchQueue.main.async {
+                if let result { self.text = result.bestTranscription.formattedString }
+                if let error, self.text.isEmpty {
+                    self.text = "(speech error: \(error.localizedDescription))"
+                    appLog.notice("app: voice error \(String(describing: error), privacy: .public)")
+                }
+            }
         }
     }
 
@@ -114,7 +129,8 @@ final class VoiceNote: ObservableObject {
             self.task = nil
             self.request = nil
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            done(self.text)
+            appLog.notice("app: voice done \(self.text, privacy: .public)")
+            done(self.text.isEmpty ? "(no words heard)" : self.text)
         }
     }
 }

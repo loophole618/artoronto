@@ -63,9 +63,13 @@ final class AppState: ObservableObject {
     let look = LookClient()
     let splat = SplatProbe()
     @Published var splatText = ""
-    @Published var splatVisible = true
+    @Published var splatVisible = UserDefaults.standard.object(forKey: "splatVisible") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(splatVisible, forKey: "splatVisible") }
+    }
     let dragon = Dragon()
-    @Published var dragonMode = Dragon.Mode.auto
+    @Published var dragonMode = Dragon.Mode(rawValue: UserDefaults.standard.string(forKey: "dragonMode") ?? "") ?? .auto {
+        didSet { UserDefaults.standard.set(dragonMode.rawValue, forKey: "dragonMode") }
+    }
     @Published var dragonText = ""
     var fireRequests = 0
     weak var arView: ARView?
@@ -169,6 +173,7 @@ struct ContentView: View {
                     state.dragonMode = all[(all.firstIndex(of: state.dragonMode)! + 1) % all.count]
                 }
                 button("🔥 FIRE", .red) { state.fireRequests += 1 }
+                button(state.splatVisible ? "👤 GUY ✓" : "👤 GUY ✗", state.splatVisible ? .indigo : .gray) { state.splatVisible.toggle() }
             }
         }
     }
@@ -178,11 +183,11 @@ struct ContentView: View {
             Picker("Mode", selection: $state.mode) {
                 ForEach(AppState.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            Menu("Dragon") {
-                Picker("Dragon", selection: $state.dragonMode) {
-                    ForEach(Dragon.Mode.allCases, id: \.self) { Text("Dragon \($0.rawValue)").tag($0) }
+            Menu("Firepearl 🐉") {
+                Picker("Firepearl", selection: $state.dragonMode) {
+                    ForEach(Dragon.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                Button("🔥 Fire") { state.fireRequests += 1 }
+                Button("Breathe fire 🔥") { state.fireRequests += 1 }
             }
             Menu("Splat") {
                 Button("Place splat here") { state.splat.replace() }
@@ -241,7 +246,7 @@ struct ContentView: View {
             } else {
                 Text(ARBodyTrackingConfiguration.isSupported ? "body: \(state.body)" : "body tracking not supported on this phone")
             }
-            if !state.dragonText.isEmpty { Text("dragon: \(state.dragonText)") }
+            if !state.dragonText.isEmpty { Text("Firepearl: \(state.dragonText)") }
             Text("avatar: \(state.avatar)")
             if !state.splatText.isEmpty { Text("splat: \(state.splatText)") }
             Text("ARToronto · build \(BuildInfo.label)")

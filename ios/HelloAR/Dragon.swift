@@ -1,4 +1,4 @@
-// Ava's dragon: small, orange, cat-sized. Walks behind you, flies over your head.
+// Firepearl, Ava's dragon: small, orange, cat-sized. Walks behind you, flies over your head.
 import RealityKit
 import UIKit
 import simd

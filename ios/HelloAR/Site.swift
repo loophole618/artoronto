@@ -167,6 +167,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
     private let location = CLLocationManager()
     private var mode = ""
     private var bestAccuracy: Double = .infinity
+    private(set) var onSite = false
 
     private(set) var offset = SIMD3<Float>(0, 0, 0)
     private var rays: [(SIMD3<Float>, SIMD3<Float>)] = []
@@ -304,7 +305,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
     private func clear() {
         if let anchor { arView?.scene.removeAnchor(anchor) }
         if let geoAnchor { arView?.session.remove(anchor: geoAnchor) }
-        anchor = nil; geoAnchor = nil; bestAccuracy = .infinity
+        anchor = nil; geoAnchor = nil; bestAccuracy = .infinity; onSite = false
     }
 
     private func startGeoMode() {
@@ -329,6 +330,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
 
     func geoTrackingChanged(_ status: ARGeoTrackingStatus) {
         guard mode == "geo", let site else { return }
+        onSite = status.state == .localized
         let state: String
         switch status.state {
         case .localized: state = "localized ✓"
@@ -368,6 +370,7 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
               let cam = arView.session.currentFrame?.camera.transform else { return }
         guard fix.horizontalAccuracy < bestAccuracy * 0.8 else { return }
         bestAccuracy = fix.horizontalAccuracy
+        onSite = fix.horizontalAccuracy <= 15
         let off = SiteFile.en([site.centre.latitude, site.centre.longitude], from: fix.coordinate)
         let phone = SIMD3<Float>(cam.columns.3.x, cam.columns.3.y, cam.columns.3.z)
         let at = phone + SIMD3<Float>(off.x, -Self.phoneHeight, -off.y)

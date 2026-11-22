@@ -13,6 +13,15 @@ final class SplatProbe {
     var visible = true
     var onStatus: ((String) -> Void)?
     private(set) var needsPlacement = false
+    private(set) var onWalk = false
+    private var world: (matrix: simd_float4x4, anchored: Bool) = (matrix_identity_float4x4, false)
+    private let worldLock = NSLock()
+
+    /// Called from the scene update: RealityKit transforms may only be read on its own thread.
+    func sync() {
+        let m = holder.transformMatrix(relativeTo: nil), a = holder.isAnchored
+        worldLock.lock(); world = (m, a); worldLock.unlock()
+    }
 
     private var points: [SplatPoint]?
     private var original: [SplatPoint]?
@@ -55,7 +64,8 @@ final class SplatProbe {
     private var placement = ""
     private var stage = ""
 
-    func placed() { needsPlacement = false; inFront = false }
+    func placed(onWalk: Bool) { needsPlacement = false; inFront = false; self.onWalk = onWalk }
+    func moveToWalk() { if points != nil, !onWalk { needsPlacement = true } }
 
     /// "strobe-n16-every0.60.splat": 16 equal figures, one every 0.60 m along the walk.
     private func parseLayout(_ label: String) {
@@ -111,7 +121,8 @@ final class SplatProbe {
             blit.endEncoding()
         }
         guard visible, let points, let arView, let frame = arView.session.currentFrame else { return }
-        guard holder.isAnchored else { step("waiting: its anchor isn't placed yet"); return }
+        worldLock.lock(); let w = world; worldLock.unlock()
+        guard w.anchored else { step("waiting: its anchor isn't placed yet"); return }
 
         if renderer == nil || rendererFormat != target.pixelFormat {
             do {
@@ -159,7 +170,7 @@ final class SplatProbe {
         let size = arView.bounds.size
         let projection = frame.camera.projectionMatrix(for: .portrait, viewportSize: size, zNear: 0.05, zFar: 200)
         let view = frame.camera.viewMatrix(for: .portrait)
-        let model = holder.transformMatrix(relativeTo: nil)
+        let model = w.matrix
         let viewport = MTLViewport(originX: 0, originY: 0, width: Double(target.width), height: Double(target.height),
                                    znear: 0, zfar: 1)
         let vd = SplatRenderer.ViewportDescriptor(viewport: viewport, projectionMatrix: projection,

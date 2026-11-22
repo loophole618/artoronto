@@ -559,7 +559,12 @@ struct ARViewContainer: UIViewRepresentable {
             state.placer.nudgeTick(camera: cam)
             state.splat.visible = state.splatVisible
             state.placer.siteVisible = state.siteVisible
+            if state.placer.onSite != wasOnSite {
+                wasOnSite = state.placer.onSite
+                if wasOnSite { state.splat.moveToWalk() }
+            }
             if state.splat.needsPlacement { placeSplat(camera: cam) }
+            state.splat.sync()
 
             if state.follower, let pose = walker.step(dt: Float(dt), camera: cam) {
                 figure.update(walker: pose.joints, headMatrix: pose.head)
@@ -594,17 +599,19 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         private var splatAnchor: AnchorEntity?
+        private var wasOnSite = false
 
         private func placeSplat(camera cam: SIMD3<Float>) {
             guard let arView, let frame = arView.session.currentFrame else { return }
             let holder = state.splat.holder
             holder.removeFromParent()
             if let a = splatAnchor { arView.scene.removeAnchor(a); splatAnchor = nil }
-            if state.splat.figures > 1, !state.splat.inFront, procession.start != nil, procession.root.isAnchored {
+            let onWalk = !state.splat.inFront && state.placer.onSite && procession.start != nil && procession.root.isAnchored
+            if state.splat.figures > 1, onWalk {
                 procession.root.addChild(holder)
                 holder.transform = Transform()
                 state.splat.arrange(along: { self.procession.frame(at: $0) })
-            } else if !state.splat.inFront, let start = procession.start, procession.root.isAnchored {
+            } else if onWalk, let start = procession.start {
                 procession.root.addChild(holder)
                 holder.position = start.point
                 holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: start.direction)
@@ -619,14 +626,16 @@ struct ARViewContainer: UIViewRepresentable {
                 a.addChild(holder)
                 holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: -fwd)
                 splatAnchor = a
+                let wait = state.siteFile != nil && !state.placer.onSite ? " (moves to the walk once the site localizes)" : ""
                 if state.splat.figures > 1 {
                     holder.orientation = simd_quatf(from: SIMD3(0, 0, -1), to: fwd)
                     state.splat.arrange(along: { s in (SIMD3<Float>(0, 0, -s), SIMD3<Float>(0, 0, -1)) })
+                    state.splat.note(String(format: "%d figures in a line from 2.5 m ahead%@", state.splat.figures, wait))
                 } else {
-                    state.splat.note("placed 2.5 m in front of you")
+                    state.splat.note("placed 2.5 m in front of you" + wait)
                 }
             }
-            state.splat.placed()
+            state.splat.placed(onWalk: onWalk)
         }
 
         private func walkKey() -> String { "walk:" + (state.siteFile?.name ?? "") }

@@ -1,6 +1,7 @@
 // Gaussian splats over the AR view: MetalSplatter draws into a transparent layer each frame,
 // which is laid over RealityKit's image in the post-process pass.
 import Foundation
+import UIKit
 import Metal
 import RealityKit
 import ARKit
@@ -16,6 +17,33 @@ final class SplatProbe {
     private(set) var onWalk = false
     private var world: (matrix: simd_float4x4, anchored: Bool) = (matrix_identity_float4x4, false)
     private let worldLock = NSLock()
+    private var pendingCapture: ((CGImage?) -> Void)?
+    private var capturePipe: MTLRenderPipelineState?
+
+    /// The splat layer of the next frame, for LOOK and LIVE (ARView.snapshot doesn't include it).
+    func captureOverlay(_ done: @escaping (CGImage?) -> Void) {
+        worldLock.lock(); pendingCapture = done; worldLock.unlock()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            if let cb = self?.takeCapture() { cb(nil) }
+        }
+    }
+
+    private func takeCapture() -> ((CGImage?) -> Void)? {
+        worldLock.lock(); defer { worldLock.unlock() }
+        let c = pendingCapture; pendingCapture = nil
+        return c
+    }
+
+    static func compose(_ base: UIImage?, _ overlay: CGImage?) -> UIImage? {
+        guard let base, let overlay else { return base }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = base.scale
+        let rect = CGRect(origin: .zero, size: base.size)
+        return UIGraphicsImageRenderer(size: base.size, format: format).image { _ in
+            base.draw(in: rect)
+            UIImage(cgImage: overlay).draw(in: rect)
+        }
+    }
 
     /// Called from the scene update: RealityKit transforms may only be read on its own thread.
     func sync() {
@@ -120,6 +148,10 @@ final class SplatProbe {
             blit.copy(from: ctx.sourceColorTexture, to: target)
             blit.endEncoding()
         }
+        var captured = false
+        defer {
+            if !captured, let cb = takeCapture() { DispatchQueue.main.async { cb(nil) } }
+        }
         guard visible, let points, let arView, let frame = arView.session.currentFrame else { return }
         worldLock.lock(); let w = world; worldLock.unlock()
         guard w.anchored else { step("waiting: its anchor isn't placed yet"); return }
@@ -196,6 +228,10 @@ final class SplatProbe {
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             enc.endEncoding()
         }
+        if let cb = takeCapture() {
+            captured = true
+            encodeCapture(ctx, overlay: overlay, done: cb)
+        }
 
         let now = CACurrentMediaTime()
         if lastFrame > 0 { frameTimes.append(now - lastFrame) }
@@ -210,7 +246,38 @@ final class SplatProbe {
         }
     }
 
-    private static func makeComposite(device: MTLDevice, format: MTLPixelFormat) -> MTLRenderPipelineState? {
+    private func encodeCapture(_ ctx: ARView.PostProcessContext, overlay: MTLTexture, done: @escaping (CGImage?) -> Void) {
+        let fail = { DispatchQueue.main.async { done(nil) } }
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: overlay.width,
+                                                         height: overlay.height, mipmapped: false)
+        d.usage = [.renderTarget]
+        d.storageMode = .shared
+        if capturePipe == nil { capturePipe = Self.makeComposite(device: ctx.device, format: .bgra8Unorm_srgb, blend: false) }
+        let pass = MTLRenderPassDescriptor()
+        guard let tex = ctx.device.makeTexture(descriptor: d), let capturePipe else { fail(); return }
+        pass.colorAttachments[0].texture = tex
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let enc = ctx.commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { fail(); return }
+        enc.setRenderPipelineState(capturePipe)
+        enc.setFragmentTexture(overlay, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        enc.endEncoding()
+        ctx.commandBuffer.addCompletedHandler { _ in
+            let w = tex.width, h = tex.height, row = w * 4
+            var bytes = [UInt8](repeating: 0, count: row * h)
+            tex.getBytes(&bytes, bytesPerRow: row, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+            let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+            let image = CGDataProvider(data: Data(bytes) as CFData).flatMap {
+                CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: row,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: info, provider: $0,
+                        decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+            }
+            DispatchQueue.main.async { done(image) }
+        }
+    }
+
+    private static func makeComposite(device: MTLDevice, format: MTLPixelFormat, blend: Bool = true) -> MTLRenderPipelineState? {
         let src = """
         #include <metal_stdlib>
         using namespace metal;
@@ -230,7 +297,7 @@ final class SplatProbe {
         d.fragmentFunction = lib.makeFunction(name: "over")
         let c = d.colorAttachments[0]!
         c.pixelFormat = format
-        c.isBlendingEnabled = true
+        c.isBlendingEnabled = blend
         c.rgbBlendOperation = .add
         c.alphaBlendOperation = .add
         c.sourceRGBBlendFactor = .one

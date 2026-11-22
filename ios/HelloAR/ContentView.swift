@@ -103,7 +103,11 @@ struct ContentView: View {
                     hud
                 }
                 LookBar(look: state.look, app: "artoronto", fps: state.liveFPS, info: lookInfo) { done in
-                    if let v = state.arView { v.snapshot(saveToHDR: false) { done($0) } } else { done(nil) }
+                    if let v = state.arView {
+                        v.snapshot(saveToHDR: false) { image in
+                            state.splat.captureOverlay { overlay in done(SplatProbe.compose(image, overlay)) }
+                        }
+                    } else { done(nil) }
                 }
                 Button { state.panelOpen.toggle() } label: {
                     Image(systemName: state.panelOpen ? "chevron.down" : "slider.horizontal.3")

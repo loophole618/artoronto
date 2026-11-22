@@ -459,7 +459,7 @@ struct ARViewContainer: UIViewRepresentable {
                         return
                     }
                     self.state.loupeOffset = .zero
-                    self.state.loupe = AppState.Loupe(image: cg, scale: image.scale, tap: p,
+                    self.state.loupe = AppState.Loupe(image: cg, scale: CGFloat(cg.width) / max(arView.bounds.width, 1), tap: p,
                                                       origin: r0.origin, d0: d0, dx: dx, dy: dy)
                 }
                 return

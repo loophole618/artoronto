@@ -9,10 +9,6 @@ final class SkyLink: ObservableObject {
     @Published var listening = false
     @Published var busy = false
 
-    /// Filled in at build time from a repository secret (empty in a local build).
-    static let builtInServer = (Bundle.main.object(forInfoDictionaryKey: "ARTSkyServer") as? String ?? "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-
     var server: String {
         get { UserDefaults.standard.string(forKey: "skyServer") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "skyServer") }

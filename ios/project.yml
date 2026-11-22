@@ -42,10 +42,8 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         ARTBuildLabel: "$(ART_BUILD_LABEL)"
-        ARTSkyServer: "$(ART_SKY_SERVER)"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.loophole618.artoronto.hello
         TARGETED_DEVICE_FAMILY: "1"
         ART_BUILD_LABEL: local
-        ART_SKY_SERVER: ""

@@ -1,4 +1,4 @@
-// ARToronto: STREET and BODY modes.
+// ARToronto: pick a scale at launch. CITY (lots + zoning), ART (STREET and BODY), PET (Firepearl).
 import SwiftUI
 import RealityKit
 import ARKit
@@ -6,11 +6,21 @@ import Combine
 import UniformTypeIdentifiers
 
 final class AppState: ObservableObject {
-    enum Mode: String, CaseIterable { case street = "STREET", body = "BODY" }
+    enum Scale: String, CaseIterable { case city = "CITY", art = "ART", pet = "PET" }
+    enum Mode: String, CaseIterable { case city = "CITY", street = "STREET", body = "BODY", pet = "PET" }
     enum Pick { case site, avatar, splat }
 
+    /// nil = the launch chooser is showing and no AR session runs.
+    @Published var scale: Scale?
     @Published var mode = Mode.street
     @Published var panelOpen = true
+    var runMode: ((Mode) -> Void)?
+    var pauseAll: (() -> Void)?
+
+    let city = CityLayer()
+    @Published var cityText = "Toronto"
+    @Published var pointText = "nothing yet"
+    @Published var cityLines = true
 
     @Published var tracking = "starting…"
     @Published var trailing = false
@@ -102,6 +112,13 @@ struct ContentView: View {
         ZStack(alignment: .bottom) {
             ARViewContainer(state: state).ignoresSafeArea()
 
+            if state.scale == .city {
+                Reticle().frame(maxWidth: .infinity, maxHeight: .infinity).ignoresSafeArea().allowsHitTesting(false)
+            }
+
+            if state.scale == nil {
+                ScaleChooser { choose($0) }
+            } else {
             VStack(alignment: .trailing, spacing: 8) {
                 if state.panelOpen {
                     controls
@@ -115,7 +132,7 @@ struct ContentView: View {
                     } else { done(nil) }
                 }
                 HStack(spacing: 8) {
-                    if !state.panelOpen && state.dragonMode != .off {
+                    if !state.panelOpen && state.scale == .pet && state.dragonMode != .off {
                         TalkButton(sky: state.sky, compact: true, begin: beginTalk, end: endTalk)
                     }
                     Button { state.panelOpen.toggle() } label: {
@@ -129,6 +146,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 16)
+            }
 
             if let loupe = state.loupe {
                 LoupeView(loupe: loupe, offset: $state.loupeOffset) { set in
@@ -185,7 +203,52 @@ struct ContentView: View {
         }
     }
 
-    private var controls: some View {
+    private func choose(_ s: AppState.Scale) {
+        let m: AppState.Mode = s == .city ? .city : (s == .pet ? .pet : .street)
+        state.mode = m
+        state.scale = s
+        state.panelOpen = true
+        state.runMode?(m)
+    }
+
+    private func changeScale() {
+        state.pauseAll?()
+        state.scale = nil
+    }
+
+    @ViewBuilder private var controls: some View {
+        switch state.scale {
+        case .city: cityControls
+        case .pet: petControls
+        default: artControls
+        }
+    }
+
+    private var cityControls: some View {
+        HStack(spacing: 8) {
+            menu
+            button(state.cityLines ? "LINES ✓" : "LINES ✗", state.cityLines ? .teal : .gray) { state.cityLines.toggle() }
+            button("RELOAD ⟳", .blue) { state.city.reload() }
+        }
+    }
+
+    private var petControls: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                menu
+                button("🐉 \(state.dragonMode.rawValue)", state.dragonMode == .off ? .gray : .orange) {
+                    let all = Dragon.Mode.allCases
+                    state.dragonMode = all[(all.firstIndex(of: state.dragonMode)! + 1) % all.count]
+                }
+                button("🔥 FIRE", .red) { state.fireRequests += 1 }
+            }
+            if state.dragonMode != .off {
+                TalkButton(sky: state.sky, begin: beginTalk, end: endTalk)
+            }
+        }
+    }
+
+    private var artControls: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 menu
@@ -215,35 +278,63 @@ struct ContentView: View {
                     button(state.wear ? "WEAR ✓" : "WEAR ✗", state.wear ? .pink : .gray) { state.wear.toggle() }
                 }
             }
-            HStack(spacing: 8) {
-                button("🐉 \(state.dragonMode.rawValue)", state.dragonMode == .off ? .gray : .orange) {
-                    let all = Dragon.Mode.allCases
-                    state.dragonMode = all[(all.firstIndex(of: state.dragonMode)! + 1) % all.count]
+            if state.mode == .street {
+                HStack(spacing: 8) {
+                    button(state.heart ? "💚 CIRCLE ✓" : "💚 CIRCLE ✗", state.heart ? .green : .gray) { state.heart.toggle() }
+                    button(state.splatVisible ? "👤 GUY ✓" : "👤 GUY ✗", state.splatVisible ? .indigo : .gray) { state.splatVisible.toggle() }
                 }
-                button("🔥 FIRE", .red) { state.fireRequests += 1 }
-                button(state.splatVisible ? "👤 GUY ✓" : "👤 GUY ✗", state.splatVisible ? .indigo : .gray) { state.splatVisible.toggle() }
-            }
-            if state.dragonMode != .off {
-                TalkButton(sky: state.sky, begin: beginTalk, end: endTalk)
             }
         }
     }
 
     private var menu: some View {
         Menu {
-            Picker("Mode", selection: $state.mode) {
-                ForEach(AppState.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            Button("Change scale…") { changeScale() }
+            switch state.scale {
+            case .city: cityMenu
+            case .pet: petMenu
+            default: artMenu
             }
-            Menu("Firepearl 🐉") {
-                Picker("Firepearl", selection: $state.dragonMode) {
-                    ForEach(Dragon.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            Menu("More") {
+                Picker("LIVE frames", selection: $state.liveFPS) {
+                    Text("LIVE 0.5 / s").tag(0.5)
+                    Text("LIVE 1 / s").tag(1.0)
+                    Text("LIVE 2 / s").tag(2.0)
                 }
-                Button("Breathe fire 🔥") { state.fireRequests += 1 }
-                Button("Connect to Sky…") { openSkyConnect() }
-                Button("Disconnect from Sky") { state.sky.disconnect() }
-                Toggle("Talks", isOn: $state.dragonTalks)
-                Toggle("Purrs and chirps", isOn: $state.dragonSounds)
-                Toggle("Dragon voice", isOn: $state.dragonVoice)
+            }
+        } label: {
+            Text("☰ \(state.mode.rawValue)")
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 36)
+                .foregroundStyle(.white)
+                .background(Color.blue.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    @ViewBuilder private var cityMenu: some View {
+        Picker("City", selection: .constant("Toronto")) {
+            Text("Toronto").tag("Toronto")
+        }
+        Toggle("Lot lines", isOn: $state.cityLines)
+        Button("Reload around me") { state.city.reload() }
+    }
+
+    @ViewBuilder private var petMenu: some View {
+        Picker("Firepearl", selection: $state.dragonMode) {
+            ForEach(Dragon.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }
+        Button("Breathe fire 🔥") { state.fireRequests += 1 }
+        Button("Connect to Sky…") { openSkyConnect() }
+        Button("Disconnect from Sky") { state.sky.disconnect() }
+        Toggle("Talks", isOn: $state.dragonTalks)
+        Toggle("Purrs and chirps", isOn: $state.dragonSounds)
+        Toggle("Dragon voice", isOn: $state.dragonVoice)
+    }
+
+    @ViewBuilder private var artMenu: some View {
+            Picker("Mode", selection: $state.mode) {
+                ForEach([AppState.Mode.street, .body], id: \.self) { Text($0.rawValue).tag($0) }
             }
             Menu("Splat") {
                 Button("Place splat here") { state.splat.replace() }
@@ -274,27 +365,18 @@ struct ContentView: View {
                 Button("Load site…") { state.pick = .site; state.picking = true }
                 Button("Reset nudge") { state.placer.resetNudge() }
             }
-            Menu("More") {
-                Toggle("Heart", isOn: $state.heart)
-                Picker("LIVE frames", selection: $state.liveFPS) {
-                    Text("LIVE 0.5 / s").tag(0.5)
-                    Text("LIVE 1 / s").tag(1.0)
-                    Text("LIVE 2 / s").tag(2.0)
-                }
-            }
-        } label: {
-            Text("☰ \(state.mode.rawValue)")
-                .font(.system(size: 13, weight: .heavy, design: .rounded))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, minHeight: 36)
-                .foregroundStyle(.white)
-                .background(Color.blue.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
-        }
+            Toggle("Green circle (heart)", isOn: $state.heart)
     }
 
     private var hud: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if state.mode == .street {
+            if state.mode == .city {
+                Text("tracking: \(state.tracking)")
+                Text("city: \(state.cityText)")
+                Text("pointing: \(state.pointText)")
+            } else if state.mode == .pet {
+                Text("tracking: \(state.tracking)")
+            } else if state.mode == .street {
                 Text("tracking: \(state.tracking)")
                 Text("caterpillar: \(state.trailCount) · \(streetText)")
                 Text("site: \(state.site)")
@@ -303,10 +385,14 @@ struct ContentView: View {
             } else {
                 Text(ARBodyTrackingConfiguration.isSupported ? "body: \(state.body)" : "body tracking not supported on this phone")
             }
-            if !state.dragonText.isEmpty { Text("Firepearl: \(state.dragonText)") }
-            if !state.surfacesText.isEmpty && state.dragonMode != .off { Text("surfaces: \(state.surfacesText)") }
-            Text("avatar: \(state.avatar)")
-            if !state.splatText.isEmpty { Text("splat: \(state.splatText)") }
+            if state.mode == .pet {
+                if !state.dragonText.isEmpty { Text("Firepearl: \(state.dragonText)") }
+                if !state.surfacesText.isEmpty && state.dragonMode != .off { Text("surfaces: \(state.surfacesText)") }
+            }
+            if state.scale == .art {
+                Text("avatar: \(state.avatar)")
+                if !state.splatText.isEmpty { Text("splat: \(state.splatText)") }
+            }
             Text("ARToronto · build \(BuildInfo.label)")
         }
         .font(.system(size: 10, design: .monospaced))
@@ -328,7 +414,8 @@ struct ContentView: View {
     }
 
     private func lookInfo() -> [String: String] {
-        ["mode": state.mode.rawValue, "tracking": state.tracking, "site": state.site,
+        ["scale": state.scale?.rawValue ?? "none", "city": state.cityText, "pointing": state.pointText,
+         "mode": state.mode.rawValue, "tracking": state.tracking, "site": state.site,
          "caterpillar": "\(state.trailCount) · \(streetText)", "follower": "\(state.follower)",
          "body": state.body, "placement": state.placement.rawValue, "size": "\(state.size)",
          "occlude": "\(state.occlude)", "wear": "\(state.wear)", "avatar": state.avatar,
@@ -389,7 +476,7 @@ struct ContentView: View {
             let site = try JSONDecoder().decode(SiteFile.self, from: Data(contentsOf: url))
             state.siteFile = site
             state.site = site.name
-            if state.mode == .street { state.placer.load(site) }
+            if state.scale == .art && state.mode == .street { state.placer.load(site) }
         } catch {
             state.site = "couldn't read \(url.lastPathComponent)"
         }
@@ -440,6 +527,11 @@ struct ARViewContainer: UIViewRepresentable {
             c.loadWalk()
         }
         state.placer.onOcclusion = { text in DispatchQueue.main.async { if state.occlusion != text { state.occlusion = text } } }
+        state.city.arView = arView
+        state.city.onStatus = { text in DispatchQueue.main.async { if state.cityText != text { state.cityText = text } } }
+        state.city.onPoint = { text in DispatchQueue.main.async { if state.pointText != text { state.pointText = text } } }
+        state.runMode = { [weak c] m in c?.run(m) }
+        state.pauseAll = { [weak c] in c?.pause() }
         state.splat.arView = arView
         state.splat.onStatus = { text in DispatchQueue.main.async { if state.splatText != text { state.splatText = text } } }
         arView.renderCallbacks.postProcess = { ctx in state.splat.postProcess(ctx) }
@@ -498,6 +590,8 @@ struct ARViewContainer: UIViewRepresentable {
         func run(_ m: AppState.Mode) {
             guard let arView else { return }
             mode = m
+            if m != .city { state.city.stop() }
+            if m != .street { state.placer.stop() }
             figure.reset()
             walker.clear()
             caterpillar.clear()
@@ -510,6 +604,18 @@ struct ARViewContainer: UIViewRepresentable {
             state.trailCount = 0
             state.crawling = false
             switch m {
+            case .city:
+                state.city.start()
+            case .pet:
+                let config = ARWorldTrackingConfiguration()
+                config.planeDetection = [.horizontal]
+                config.worldAlignment = .gravity
+                // the LiDAR room mesh lets furniture hide Firepearl behind it
+                if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+                    config.sceneReconstruction = .mesh
+                    arView.environment.sceneUnderstanding.options.insert(.occlusion)
+                }
+                arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
             case .body:
                 guard ARBodyTrackingConfiguration.isSupported else { return }
                 let config = ARBodyTrackingConfiguration()
@@ -535,13 +641,34 @@ struct ARViewContainer: UIViewRepresentable {
             }
         }
 
+        /// Back to the launch chooser: stop every layer and the AR session.
+        func pause() {
+            mode = nil
+            state.city.stop()
+            state.placer.stop()
+            figure.reset()
+            walker.clear()
+            caterpillar.clear()
+            state.dragon.reset()
+            state.trailing = false
+            state.trailCount = 0
+            state.crawling = false
+            arView?.session.pause()
+        }
+
         func update(deltaTime dt: Double) {
             time += dt
+            guard state.scale != nil else { return }
             if mode != state.mode { run(state.mode) }
             figure.wear = state.wear
             heart?.isEnabled = mode == .street && state.heart
             beat()
             updateDragon(dt: Float(dt))
+            if mode != .street { state.splat.visible = false }
+            if mode == .city, let frame = arView?.session.currentFrame {
+                state.city.linesVisible = state.cityLines
+                state.city.tick(camera: frame.camera.transform)
+            }
             guard mode == .street, let frame = arView?.session.currentFrame else { return }
 
             if state.clearRequests != handledClears {
@@ -619,7 +746,7 @@ struct ARViewContainer: UIViewRepresentable {
             state.dragon.voice.talks = state.dragonTalks
             state.dragon.voice.sounds = state.dragonSounds
             state.dragon.voice.dragonVoice = state.dragonVoice
-            state.dragon.update(dt: dt, mode: state.dragonMode, leaderFloor: leaderFloor, leaderHead: leaderHead,
+            state.dragon.update(dt: dt, mode: mode == .pet ? state.dragonMode : .off, leaderFloor: leaderFloor, leaderHead: leaderHead,
                                 viewer: viewer, camera: cam, cameraForward: fwd, fire: fire)
             let text = state.dragon.status
             if text != lastDragonText {
@@ -786,7 +913,7 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         func session(_ session: ARSession, didChange geoTrackingStatus: ARGeoTrackingStatus) {
-            state.placer.geoTrackingChanged(geoTrackingStatus)
+            if mode == .city { state.city.geoTrackingChanged(geoTrackingStatus) } else { state.placer.geoTrackingChanged(geoTrackingStatus) }
         }
 
         func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
@@ -895,6 +1022,52 @@ struct ARViewContainer: UIViewRepresentable {
             let dub = 0.6 * exp(-pow((phase - 0.30) / 0.05, 2))
             heart?.scale = SIMD3<Float>(repeating: Float(1 + 0.08 * (lub + dub)))
         }
+    }
+}
+
+/// The launch screen: which scale are we testing?
+struct ScaleChooser: View {
+    let choose: (AppState.Scale) -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 16) {
+                Text("ARToronto").font(.system(size: 32, weight: .heavy, design: .rounded))
+                Text("Which scale are we testing?").font(.system(size: 17, weight: .semibold, design: .rounded)).opacity(0.85)
+                option("CITY", "Toronto lots and zoning around you. Point the phone at a property.", .blue) { choose(.city) }
+                option("ART", "Follow, the guy, the green circle, the dragon trail.", .pink) { choose(.art) }
+                option("PET", "Firepearl.", .orange) { choose(.pet) }
+                Text("build \(BuildInfo.label)").font(.system(size: 11, design: .monospaced)).opacity(0.6)
+            }
+            .foregroundStyle(.white)
+            .padding(24)
+        }
+    }
+
+    private func option(_ title: String, _ detail: String, _ colour: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 24, weight: .heavy, design: .rounded))
+                Text(detail).font(.system(size: 13, design: .rounded)).multilineTextAlignment(.leading).opacity(0.9)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .foregroundStyle(.white)
+            .background(colour.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+/// CITY: the cross at the centre of the screen is the line of sight that picks a lot.
+struct Reticle: View {
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.9), lineWidth: 2).frame(width: 34, height: 34)
+            Rectangle().fill(Color.white.opacity(0.9)).frame(width: 2, height: 14)
+            Rectangle().fill(Color.white.opacity(0.9)).frame(width: 14, height: 2)
+        }
+        .shadow(color: .black.opacity(0.6), radius: 2)
     }
 }
 

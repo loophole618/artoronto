@@ -85,7 +85,7 @@ enum SiteModel {
         return SIMD3(e.x, Float(b.height_m), -e.y)
     }
 
-    private static func bar(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float, _ m: RealityKit.Material) -> ModelEntity {
+    static func bar(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float, _ m: RealityKit.Material) -> ModelEntity {
         let d = b - a, len = max(simd_length(d), 0.001)
         let e = ModelEntity(mesh: .generateBox(size: 1), materials: [m])
         e.transform = Transform(scale: SIMD3(t, len, t),
@@ -300,6 +300,16 @@ final class SitePlacer: NSObject, CLLocationManagerDelegate {
                 if available { self.startGeoMode() } else { self.startCompassMode(reason: "Apple has no location anchors here") }
             }
         }
+    }
+
+    /// Take the site off the street (leaving ART STREET); `load` puts it back.
+    func stop() {
+        clear()
+        location.stopUpdatingLocation()
+        mode = ""
+        nudging = false
+        rays = []
+        clearSightLine()
     }
 
     private func clear() {

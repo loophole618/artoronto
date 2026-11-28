@@ -8,7 +8,7 @@ The design notes live in the artwork's own repo (`art-studio/installations/ar/`)
 
 | Path | What |
 |---|---|
-| `ios/` | Native iPhone app (Swift + RealityKit). **STREET**: a site overlay placed by location (SITE file, NUDGE), the chakra caterpillar (GO / STOP), a figure that follows your path, the beating heart. **BODY**: a figure copies the person in front of the camera. A glTF character can dress the figure. LOOK / LIVE send the view to the studio over Wi-Fi. |
+| `ios/` | Native iPhone app (Swift + RealityKit). At launch you pick a scale. **CITY**: the City of Toronto's lots, zoning and height overlay within 100 m (live from the City's public ArcGIS layers); the lot you point the phone at lights up as its zoning height box. **PET**: Firepearl. **ART** has two modes. **STREET**: a site overlay placed by location (SITE file, NUDGE), the chakra caterpillar (GO / STOP), a figure that follows your path, the beating heart. **BODY**: a figure copies the person in front of the camera. A glTF character can dress the figure. LOOK / LIVE send the view to the studio over Wi-Fi. |
 | `ios/project.yml` | XcodeGen spec. The Xcode project is generated in CI, never committed. |
 | `world.json` | Shared world description (sphere locations, colour, pulse) for every client. Locations are placeholders. |
 | `tools/` | `look_server.py` (studio receiver for LOOK / LIVE) and `look_wait.py`. |

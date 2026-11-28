@@ -92,8 +92,28 @@ function Close-Sideloadly([int]$ProcessId) {
     }
     $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if ($proc -and -not $proc.WaitForExit(10000)) { Stop-Process -Id $ProcessId -Force }
+    # A Sideloadly started straight after one closed opened only a stub window ('sideloadly') and
+    # quit (2026-11-28), as if the old one still held the single-instance lock: let it let go.
+    Start-Sleep -Seconds 5
 }
 
+# Qt builds an EMPTY accessibility tree for good if UI Automation asks the instant its window
+# appears (suspected 2026-11-28; the real cause that day was the next point). And match the MAIN
+# window exactly ('Sideloadly! v0.72', case-sensitive): a fresh Sideloadly also opens a short-lived
+# window titled 'sideloadly' with no controls, which a case-blind match grabbed.
+# So find the window by Win32 only, wait, and only then take the UIA element.
+function Wait-SideloadlyWindow([int]$ProcessId, [int]$SettleSec = 8) {
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        $w = Get-AppWindows $ProcessId | Where-Object { $_.Title -clike 'Sideloadly!*' -and $_.Left -gt -30000 -and $_.Width -ge 200 } | Select-Object -First 1
+        if ($w) {
+            Start-Sleep -Seconds $SettleSec
+            return [System.Windows.Automation.AutomationElement]::FromHandle($w.Hwnd)
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    return $null
+}
 function Get-All($root, $type) {
     $cond = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ControlTypeProperty), $type
     @($root.FindAll($TS::Descendants, $cond))
@@ -117,10 +137,34 @@ try {
     $p = Start-OwnedProcess -FilePath (Join-Path $env:LOCALAPPDATA 'Sideloadly\sideloadly.exe') -KeepFocus
     Write-Host "  started a fresh Sideloadly"
     # A minimized window sits at -32000 and Find-AppWindow skips it: restore it without activating.
-    $min = Get-AppWindows $p.Id | Where-Object { $_.Title -like 'Sideloadly*' -and $_.Left -le -30000 } | Select-Object -First 1
+    $min = Get-AppWindows $p.Id | Where-Object { $_.Title -clike 'Sideloadly!*' -and $_.Left -le -30000 } | Select-Object -First 1
     if ($min) { [void][ArtorontoTools.InstallBuildNative]::ShowWindow($min.Hwnd, 4); Start-Sleep -Seconds 1 }   # SW_SHOWNOACTIVATE
-    $win = Find-AppWindow -ProcessId $p.Id -TitleRegex '^Sideloadly' -TimeoutSec 30
+    $win = Wait-SideloadlyWindow $p.Id
     if (-not $win) { throw 'Sideloadly window not found' }
+    # A fresh Sideloadly shows its window before its controls exist, and a window element taken that
+    # early can stay empty: re-take it until the Start button is there.
+    # Qt answered with an EMPTY control tree for good when asked the instant its window appeared
+    # (2026-11-28), so give it a few seconds first, and relaunch once if the controls still don't show.
+    $ready = $false
+    foreach ($try in 1, 2) {
+        $hwnd = $win.Current.NativeWindowHandle
+        $deadline = (Get-Date).AddSeconds(15)
+        while (-not $ready -and (Get-Date) -lt $deadline) {
+            $win = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$hwnd)
+            $ready = @(Get-All $win $CT::Button | Where-Object { $_.Current.Name -eq 'Start' }).Count -gt 0
+            if (-not $ready) { Start-Sleep -Milliseconds 500 }
+        }
+        if ($ready -or $try -eq 2) { break }
+        Write-Host "  Sideloadly showed no controls; starting it again"
+        Close-Sideloadly $p.Id
+        $p = Start-OwnedProcess -FilePath (Join-Path $env:LOCALAPPDATA 'Sideloadly\sideloadly.exe') -KeepFocus
+        $win = Wait-SideloadlyWindow $p.Id
+        if (-not $win) { throw 'Sideloadly window not found' }
+    }
+    if (-not $ready) {
+        $all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition).Count
+        throw "Sideloadly's window shows no Start button (tried twice): '$($win.Current.Name)' hwnd $($win.Current.NativeWindowHandle), $all controls, buttons: $((Get-All $win $CT::Button | ForEach-Object { $_.Current.Name }) -join '|')"
+    }
     $open = @(Get-Modals $p.Id | Where-Object { $_.Title -ne 'Choose IPA File' })
     if ($open.Count) { throw "Sideloadly has a dialog open: '$($open[0].Title)'. Close it, then run again." }
 
@@ -129,6 +173,7 @@ try {
     $d = Get-Modals $p.Id | Where-Object { $_.Title -eq 'Choose IPA File' } | Select-Object -First 1
     if (-not $d) {
         $ipaButton = Get-All $win $CT::Button | Sort-Object { $_.Current.BoundingRectangle.Height } | Select-Object -Last 1
+        if (-not $ipaButton) { throw 'no IPA button in Sideloadly' }
         # Pressing it opens a modal dialog, and the press may not return until the dialog closes,
         # so press it from a second thread.
         $ps = [PowerShell]::Create()

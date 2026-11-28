@@ -15,12 +15,27 @@ struct CityLot {
     var zoneText = ""
     var height: Float?
     var heightText = ""
+    /// Left out of city-wide By-law 569-2013 ("Zoning Not Part of This By-law"): still under a former by-law.
+    var excluded = false
+    var formerBylaw = ""   // e.g. "438-86", from "Zoning Former Municipality By-laws"
+    var refZone = ""       // what the 569-2013 map shows there for reference, e.g. "R (d1.0) (x810)"
 
-    var label: String {
-        [address.isEmpty ? "lot \(id)" : address,
-         zoneText.isEmpty ? "no 569-2013 zoning" : zoneText,
-         heightText.isEmpty ? "no height overlay" : heightText].joined(separator: " · ")
+    /// The lines a label shows: address, zoning, height (and the 569-2013 reference for an excluded lot).
+    var lines: [String] {
+        var out = [address.isEmpty ? "lot \(id)" : address]
+        if !zoneText.isEmpty {
+            out.append(zoneText)
+        } else if excluded {
+            out.append("NOT IN 569-2013" + (formerBylaw.isEmpty ? "" : " · By-law \(formerBylaw)"))
+            if !refZone.isEmpty { out.append("569 map shows \(refZone)") }
+        } else {
+            out.append(formerBylaw.isEmpty ? "no zoning found" : "By-law \(formerBylaw) only")
+        }
+        out.append(heightText.isEmpty ? "no height overlay" : heightText)
+        return out
     }
+
+    var label: String { lines.joined(separator: " · ") }
 }
 
 enum CityError: LocalizedError {
@@ -35,6 +50,8 @@ enum CityData {
     static let zoning = root + "/cot_geospatial11/FeatureServer/3"
     static let heights = root + "/cot_geospatial11/FeatureServer/9"
     static let addresses = root + "/cot_geospatial27/MapServer/101"
+    static let notPart = root + "/cot_geospatial11/FeatureServer/12"   // Zoning Not Part of This By-law
+    static let former = root + "/cot_geospatial11/FeatureServer/8"     // Zoning Former Municipality By-laws
 
     /// The City publishes NAD83(CSRS) coordinates as if they were WGS84; Apple's anchors are WGS84 (ITRF2014).
     /// At epoch 2026.9 the shift is 0.81 m west and 1.07 m north (pyproj at 480 Brock, the same to a few cm city-wide).
@@ -56,6 +73,24 @@ enum CityData {
         let k = metresPerDegree(c.latitude)
         let dlon = r / k.lon, dlat = r / k.lat
         return String(format: "%.7f,%.7f,%.7f,%.7f", c.longitude - dlon, c.latitude - dlat, c.longitude + dlon, c.latitude + dlat)
+    }
+
+    /// The box that covers every parcel found (a big lot reaches past the search box, and its
+    /// address point or zone can lie outside it), capped at `cap` metres around `c`.
+    static func cover(_ parcels: [Feature], around c: CLLocationCoordinate2D, radius r: Double, cap: Double) -> String {
+        let k = metresPerDegree(c.latitude)
+        var lo = (c.longitude - r / k.lon, c.latitude - r / k.lat), hi = (c.longitude + r / k.lon, c.latitude + r / k.lat)
+        for f in parcels {
+            for ring in f.rings {
+                for p in ring where p.count >= 2 {
+                    lo = (min(lo.0, p[0]), min(lo.1, p[1]))
+                    hi = (max(hi.0, p[0]), max(hi.1, p[1]))
+                }
+            }
+        }
+        lo = (max(lo.0, c.longitude - cap / k.lon), max(lo.1, c.latitude - cap / k.lat))
+        hi = (min(hi.0, c.longitude + cap / k.lon), min(hi.1, c.latitude + cap / k.lat))
+        return String(format: "%.7f,%.7f,%.7f,%.7f", lo.0, lo.1, hi.0, hi.1)
     }
 
     static func query(_ layer: String, fields: String, box: String) async throws -> [Feature] {
@@ -99,15 +134,18 @@ enum CityData {
 
     /// Lots inside the box around `c`, each tagged with its zone, height overlay and address.
     static func load(around c: CLLocationCoordinate2D, radius: Double) async throws -> [CityLot] {
-        let b = box(c, radius)
-        async let p = query(parcels, fields: "OBJECTID,PARCELID,FEATURE_TYPE,DATE_EXPIRY", box: b)
+        let pf = try await query(parcels, fields: "OBJECTID,PARCELID,FEATURE_TYPE,DATE_EXPIRY", box: box(c, radius))
+        let b = cover(pf, around: c, radius: radius, cap: 400)
         async let z = query(zoning, fields: "ZN_ZONE,ZN_STRING", box: b)
         async let h = query(heights, fields: "HT_HEIGHT,HT_STORIES,HT_STRING", box: b)
         async let a = query(addresses, fields: "ADDRESS_FULL,LO_NUM,CLASS_FAMILY_DESC", box: b)
-        let pf = try await p
+        async let n = query(notPart, fields: "ZN_ZONE,ZN_STRING,ZN_FSI_DENSITY,ZN_EXCPTN_NO", box: b)
+        async let fb = query(former, fields: "BL_NO,DISPLAY_LABEL", box: b)
         let zf = (try? await z) ?? []
         let hf = (try? await h) ?? []
         let af = (try? await a) ?? []
+        let nf = (try? await n) ?? []
+        let ff = (try? await fb) ?? []
 
         let k = metresPerDegree(c.latitude)
         func local(_ ll: [Double]) -> SIMD2<Float> {
@@ -130,6 +168,22 @@ enum CityData {
             if let st = f.props["HT_STORIES"] as? Double, st > 0 { text += String(format: " · %.0f storeys", st) }
             return (r, r.map(Geo.area).reduce(0, +), ht, text)
         }
+        let excluded = nf.compactMap { f -> (rings: [[SIMD2<Float>]], area: Float, ref: String)? in
+            let r = rings(f)
+            guard !r.isEmpty else { return nil }
+            var ref = (f.props["ZN_STRING"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            if ref.isEmpty, let zn = f.props["ZN_ZONE"] as? String, !zn.isEmpty {
+                ref = zn
+                if let d = f.props["ZN_FSI_DENSITY"] as? Double, d > 0 { ref += String(format: " (d%.1f)", d) }
+                if let x = f.props["ZN_EXCPTN_NO"] as? Int, x > 0 { ref += " (x\(x))" }
+            }
+            return (r, r.map(Geo.area).reduce(0, +), ref)
+        }
+        let formers = ff.compactMap { f -> (rings: [[SIMD2<Float>]], area: Float, bylaw: String)? in
+            let r = rings(f)
+            guard !r.isEmpty else { return nil }
+            return (r, r.map(Geo.area).reduce(0, +), f.props["BL_NO"] as? String ?? "")
+        }
         let points = af.compactMap { f -> (p: SIMD2<Float>, name: String, num: Int, land: Bool)? in
             guard let ll = f.rings.first?.first, ll.count >= 2 else { return nil }
             return (local(ll), f.props["ADDRESS_FULL"] as? String ?? "", f.props["LO_NUM"] as? Int ?? 0,
@@ -147,6 +201,16 @@ enum CityData {
             if let zn = zones.filter({ $0.rings.contains { Geo.contains($0, lot.point) } }).min(by: { $0.area < $1.area }) {
                 lot.zone = zn.zone
                 lot.zoneText = zn.text
+            }
+            if lot.zoneText.isEmpty,
+               let ex = excluded.filter({ $0.rings.contains { Geo.contains($0, lot.point) } }).min(by: { $0.area < $1.area }) {
+                lot.excluded = true
+                lot.refZone = ex.ref
+                lot.zone = "EXCLUDED"
+            }
+            if lot.zoneText.isEmpty,
+               let fm = formers.filter({ $0.rings.contains { Geo.contains($0, lot.point) } }).min(by: { $0.area < $1.area }) {
+                lot.formerBylaw = fm.bylaw
             }
             if let ht = overlays.filter({ $0.rings.contains { Geo.contains($0, lot.point) } }).min(by: { $0.area < $1.area }) {
                 lot.height = ht.height
@@ -337,6 +401,7 @@ enum CityModel {
     /// institutional blue, open space green, utility grey.
     static func colour(_ zone: String) -> UIColor {
         let z = zone.uppercased()
+        if z == "EXCLUDED" { return UIColor(red: 1.0, green: 0.25, blue: 0.85, alpha: 1) }   // outside 569-2013: magenta
         if z.hasPrefix("CR") || z == "CL" { return UIColor(red: 1.0, green: 0.30, blue: 0.35, alpha: 1) }
         if z.hasPrefix("R") { return UIColor(red: 1.0, green: 0.80, blue: 0.15, alpha: 1) }
         if z.hasPrefix("E") { return UIColor(red: 0.70, green: 0.40, blue: 1.0, alpha: 1) }
@@ -378,9 +443,7 @@ enum CityModel {
                 }
             }
         }
-        let label = makeLabel([lot.address.isEmpty ? "lot \(lot.id)" : lot.address,
-                               lot.zoneText.isEmpty ? "no 569-2013 zoning" : lot.zoneText,
-                               lot.heightText.isEmpty ? "no height overlay" : lot.heightText])
+        let label = makeLabel(lot.lines)
         label.position = p3(lot.point, max(lot.height ?? 0, 3) + 1.2)
         root.addChild(label)
         return (root, label)
@@ -447,6 +510,8 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
     weak var arView: ARView?
     var onStatus: ((String) -> Void)?
     var onPoint: ((String) -> Void)?
+    /// The placement badge: text and level (0 waiting, 1 localizing, 2 localized, 3 approximate, 4 failed).
+    var onBadge: ((String, Int) -> Void)?
     let radius: Double = 100
     static let reach: Float = 150
     static let phoneHeight: Float = 1.4
@@ -458,6 +523,9 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
     private var running = false
     private var mode = ""          // "geo" or "compass", once known
     private var placeText = ""
+    /// Apple location anchors say "localized". Until then the lots sit where GPS guessed, metres off,
+    /// so nothing is picked (David, 2026-11-28: the porch picked the neighbours before localizing).
+    private(set) var localized = false
     private var countText = ""
     private var origin: CLLocationCoordinate2D?
     private var bestFix: CLLocation?
@@ -482,6 +550,8 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
         running = true
         generation += 1
         mode = ""; placeText = "checking Apple location anchors…"; countText = "waiting for GPS"
+        localized = false
+        badge("WAITING FOR GPS", 0)
         lots = []; origin = nil; bestFix = nil; pointed = nil
         arView.environment.sceneUnderstanding.options.remove(.occlusion)
         location.delegate = self
@@ -518,6 +588,13 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
 
     private func status(_ s: String) { DispatchQueue.main.async { self.onStatus?(s) } }
 
+    private var lastBadge = ""
+    private func badge(_ text: String, _ level: Int) {
+        guard text != lastBadge else { return }
+        lastBadge = text
+        DispatchQueue.main.async { self.onBadge?(text, level) }
+    }
+
     private func refreshStatus() { status("Toronto · \(placeText) · \(countText)") }
 
     private func startGeo() {
@@ -527,6 +604,7 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
         config.planeDetection = [.horizontal]
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         placeText = "Apple anchor, initializing…"
+        badge("LOCALIZING… point at the buildings", 1)
         refreshStatus()
         placeAnchor()
     }
@@ -539,6 +617,7 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
         config.worldAlignment = .gravityAndHeading
         arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         placeText = "GPS + compass (\(reason))"
+        badge("APPROXIMATE · GPS + compass", 3)
         refreshStatus()
         placeAnchor()
     }
@@ -561,6 +640,12 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
         default: acc = "—"
         }
         placeText = "Apple anchor \(state) · accuracy \(acc)"
+        localized = s.state == .localized
+        switch s.state {
+        case .localized: badge("LOCALIZED ✓ · accuracy \(acc)", 2)
+        case .notAvailable: badge("NO APPLE ANCHORS HERE", 4)
+        default: badge("LOCALIZING… point at the buildings", 1)
+        }
         refreshStatus()
     }
 
@@ -666,6 +751,7 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
         let phone = SIMD3<Float>(cam.columns.3.x, cam.columns.3.y, cam.columns.3.z)
         anchor.position = phone + SIMD3<Float>(e, -Self.phoneHeight, -n)
         placeText = "GPS ±\(Int(fix.horizontalAccuracy)) m + compass"
+        badge("APPROXIMATE · GPS ±\(Int(fix.horizontalAccuracy)) m + compass", 3)
         refreshStatus()
     }
 
@@ -685,6 +771,14 @@ final class CityLayer: NSObject, CLLocationManagerDelegate {
         guard now - lastTick > 0.1 else { return }
         lastTick = now
 
+        if mode == "geo" && !localized {
+            if pointed != nil { highlight?.removeFromParent(); highlight = nil; label = nil; pointed = nil }
+            if now - lastPointText > 0.5 {
+                lastPointText = now
+                DispatchQueue.main.async { self.onPoint?("waiting for Apple to localize (point at the buildings)") }
+            }
+            return
+        }
         let o2 = SIMD2<Float>(lo.x, -lo.z), d2 = SIMD2<Float>(ld.x, -ld.z)
         var best: (i: Int, t: Float)?
         for (i, lot) in lots.enumerated() {

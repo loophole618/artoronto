@@ -21,6 +21,8 @@ final class AppState: ObservableObject {
     @Published var cityText = "Toronto"
     @Published var pointText = "nothing yet"
     @Published var cityLines = true
+    @Published var cityBadge = "WAITING FOR GPS"
+    @Published var cityBadgeLevel = 0
 
     @Published var tracking = "starting…"
     @Published var trailing = false
@@ -114,6 +116,10 @@ struct ContentView: View {
 
             if state.scale == .city {
                 Reticle().frame(maxWidth: .infinity, maxHeight: .infinity).ignoresSafeArea().allowsHitTesting(false)
+                PlacementBadge(text: state.cityBadge, level: state.cityBadgeLevel)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 58)
+                    .allowsHitTesting(false)
             }
 
             if state.scale == nil {
@@ -530,6 +536,7 @@ struct ARViewContainer: UIViewRepresentable {
         state.city.arView = arView
         state.city.onStatus = { text in DispatchQueue.main.async { if state.cityText != text { state.cityText = text } } }
         state.city.onPoint = { text in DispatchQueue.main.async { if state.pointText != text { state.pointText = text } } }
+        state.city.onBadge = { text, level in DispatchQueue.main.async { state.cityBadge = text; state.cityBadgeLevel = level } }
         state.runMode = { [weak c] m in c?.run(m) }
         state.pauseAll = { [weak c] in c?.pause() }
         state.splat.arView = arView
@@ -1055,6 +1062,36 @@ struct ScaleChooser: View {
             .padding(16)
             .foregroundStyle(.white)
             .background(colour.opacity(0.85), in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+/// CITY: whether the lots are pinned to the street. Green = Apple localized (picking on);
+/// amber = still localizing (picking off); orange = GPS + compass only (approximate); red = none.
+struct PlacementBadge: View {
+    let text: String
+    let level: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(colour).frame(width: 10, height: 10)
+            Text(text).font(.system(size: 13, weight: .heavy, design: .rounded)).lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .foregroundStyle(.white)
+        .background(colour.opacity(0.35), in: Capsule())
+        .overlay(Capsule().stroke(colour, lineWidth: 1.5))
+        .background(.black.opacity(0.35), in: Capsule())
+    }
+
+    private var colour: Color {
+        switch level {
+        case 2: return .green
+        case 1: return .yellow
+        case 3: return .orange
+        case 4: return .red
+        default: return .gray
         }
     }
 }

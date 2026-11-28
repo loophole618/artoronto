@@ -16,14 +16,17 @@ no cable when the phone is on the home Wi-Fi.
    the screen badge shows Blue while it works. Signing stays with the Apple ID already saved in
    Sideloadly. A dialog Sideloadly raises is reported and left open for a human.
 Needs: gh (logged in), Sideloadly, and the Skyhook commons desktop-uia + screen-badge skills.
-If the phone won't show: wake it on the home Wi-Fi; if it still won't, turn its Wi-Fi off and on
-AND restart Sideloadly (its device list can go stale; 2026-11-28 it took both).
+Sideloadly lives CLOSED: each run closes any open Sideloadly, starts a fresh one and closes it
+again when done (-KeepOpen leaves it open). David, 2026-11-28: a Sideloadly left open lost the
+phone after a walk off the home Wi-Fi and only a restart found it again.
+If the phone still won't show: wake it on the home Wi-Fi; if it still won't, turn its Wi-Fi off and on.
 #>
 param(
     [string]$Branch = 'main',
     [int]$Run = 0,
     [switch]$DownloadOnly,
     [switch]$Usb,
+    [switch]$KeepOpen,
     [int]$DeviceWaitSec = 90,
     [int]$InstallTimeoutSec = 600
 )
@@ -81,6 +84,16 @@ public static string GetText(System.IntPtr hWnd) {
 $TS = [System.Windows.Automation.TreeScope]
 $CT = [System.Windows.Automation.ControlType]
 
+# Close Sideloadly politely (WM_CLOSE to its windows), then by PID if it is still there after 10 s.
+function Close-Sideloadly([int]$ProcessId) {
+    $res = [IntPtr]::Zero
+    foreach ($w in Get-AppWindows $ProcessId) {
+        [void][DesktopUiaNative]::SendMessageTimeout($w.Hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero, 2, 2000, [ref]$res)
+    }
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($proc -and -not $proc.WaitForExit(10000)) { Stop-Process -Id $ProcessId -Force }
+}
+
 function Get-All($root, $type) {
     $cond = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ControlTypeProperty), $type
     @($root.FindAll($TS::Descendants, $cond))
@@ -97,11 +110,12 @@ function Read-Status($win) {
 
 & $badge Blue | Out-Null
 try {
-    $p = Get-Process sideloadly -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $p) {
-        $p = Start-OwnedProcess -FilePath (Join-Path $env:LOCALAPPDATA 'Sideloadly\sideloadly.exe') -KeepFocus
-        Write-Host "  started Sideloadly"
+    foreach ($old in @(Get-Process sideloadly -ErrorAction SilentlyContinue)) {
+        Close-Sideloadly $old.Id
+        Write-Host "  closed the open Sideloadly (pid $($old.Id)) to start a fresh one"
     }
+    $p = Start-OwnedProcess -FilePath (Join-Path $env:LOCALAPPDATA 'Sideloadly\sideloadly.exe') -KeepFocus
+    Write-Host "  started a fresh Sideloadly"
     # A minimized window sits at -32000 and Find-AppWindow skips it: restore it without activating.
     $min = Get-AppWindows $p.Id | Where-Object { $_.Title -like 'Sideloadly*' -and $_.Left -le -30000 } | Select-Object -First 1
     if ($min) { [void][ArtorontoTools.InstallBuildNative]::ShowWindow($min.Hwnd, 4); Start-Sleep -Seconds 1 }   # SW_SHOWNOACTIVATE
@@ -151,59 +165,73 @@ try {
     if (-not $label) { throw "Sideloadly doesn't show the .ipa after loading it" }
     Write-Host "  loaded into Sideloadly"
 
-    # --- the phone: @Wi-Fi first (or USB with -Usb), waiting for it to appear.
-    $combo = Get-All $win $CT::ComboBox | Where-Object { $_.Current.Name -eq 'iDevice:' } | Select-Object -First 1
-    $device = $null
-    $deadline = (Get-Date).AddSeconds($DeviceWaitSec)
-    $told = $false
-    while (-not $device -and (Get-Date) -lt $deadline) {
-        $items = @(Get-All $combo $CT::ListItem | ForEach-Object { $_.Current.Name } | Where-Object { $_ -and $_ -notmatch 'no devices' })
-        $wifi = $items | Where-Object { $_ -match '@Wi-Fi' }
-        $cable = $items | Where-Object { $_ -notmatch '@Wi-Fi' }
-        $device = if ($Usb) { @($cable + $wifi)[0] } else { @($wifi + $cable)[0] }
-        if (-not $device) {
-            if (-not $told) { Write-Host "  waiting for the phone (wake it on the home Wi-Fi; if it was asleep, turn its Wi-Fi off and on)"; $told = $true }
-            Start-Sleep -Seconds 3
+    :attempts for ($attempt = 1; $attempt -le 2; $attempt++) {
+        # --- the phone: @Wi-Fi first (or USB with -Usb), waiting for it to appear.
+        $combo = Get-All $win $CT::ComboBox | Where-Object { $_.Current.Name -eq 'iDevice:' } | Select-Object -First 1
+        $device = $null
+        $deadline = (Get-Date).AddSeconds($DeviceWaitSec)
+        $told = $false
+        while (-not $device -and (Get-Date) -lt $deadline) {
+            $items = @(Get-All $combo $CT::ListItem | ForEach-Object { $_.Current.Name } | Where-Object { $_ -and $_ -notmatch 'no devices' })
+            $wifi = $items | Where-Object { $_ -match '@Wi-Fi' }
+            $cable = $items | Where-Object { $_ -notmatch '@Wi-Fi' }
+            $device = if ($Usb) { @($cable + $wifi)[0] } else { @($wifi + $cable)[0] }
+            if (-not $device) {
+                if (-not $told) { Write-Host "  waiting for the phone (wake it on the home Wi-Fi; if it was asleep, turn its Wi-Fi off and on)"; $told = $true }
+                Start-Sleep -Seconds 3
+            }
         }
-    }
-    if (-not $device) { throw "no phone in Sideloadly after $DeviceWaitSec s. Wake it; if it still won't show, turn the phone's Wi-Fi off and on AND restart Sideloadly, then run again." }
-    if ((Get-ControlValue $combo) -ne $device) { Select-ComboItem $combo $device }
-    Write-Host "  device: $device"
+        if (-not $device) { throw "no phone in Sideloadly after $DeviceWaitSec s. Wake it; if it still won't show, turn the phone's Wi-Fi off and on AND restart Sideloadly, then run again." }
+        if ((Get-ControlValue $combo) -ne $device) { Select-ComboItem $combo $device }
+        Write-Host "  device: $device"
 
-    $account = Get-All $win $CT::ComboBox | Where-Object { $_.Current.Name -eq 'Apple ID:' } | Select-Object -First 1
-    $who = Get-ControlValue $account
-    if (-not $who -or $who -match 'Add New Apple ID') { throw 'no Apple ID selected in Sideloadly' }
+        $account = Get-All $win $CT::ComboBox | Where-Object { $_.Current.Name -eq 'Apple ID:' } | Select-Object -First 1
+        $who = Get-ControlValue $account
+        if (-not $who -or $who -match 'Add New Apple ID') { throw 'no Apple ID selected in Sideloadly' }
 
-    # --- Start, then follow the status line.
-    $before = (Read-Status $win).Text
-    $start = Get-All $win $CT::Button | Where-Object { $_.Current.Name -eq 'Start' } | Select-Object -First 1
-    if (-not $start.Current.IsEnabled) { throw 'Start is greyed out' }
-    Invoke-Control $start
-    Write-Host "  Start pressed"
-    $last = ''
-    $moved = $false
-    $deadline = (Get-Date).AddSeconds($InstallTimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 700
-        $s = Read-Status $win
-        $line = "$($s.Text) $($s.Pct)".Trim()
-        if ($line -ne $last) { Write-Host "  sideloadly: $line"; $last = $line }
-        if ($s.Text -ne $before -or $s.Pct -ne '100%') { $moved = $true }
-        $m = @(Get-Modals $p.Id)
-        if ($m.Count) {
-            $shot = Join-Path $env:TEMP 'sideloadly-dialog.png'
-            Save-Screenshot -Path $shot -Hwnd $m[0].Hwnd
-            throw "Sideloadly opened a dialog: '$($m[0].Title)' (left open; screenshot $shot)"
-        }
-        if ($moved -and $s.Text -match '^Done\.?$') {
-            Write-Host "INSTALLED build $($r.number)-$sha on $device"
-            return
-        }
-        if ($moved -and $s.Text -match '(?i)error|fail|guru meditation|exception|unable|denied') {
+        # --- Start, then follow the status line.
+        $before = (Read-Status $win).Text
+        $start = Get-All $win $CT::Button | Where-Object { $_.Current.Name -eq 'Start' } | Select-Object -First 1
+        if (-not $start.Current.IsEnabled) { throw 'Start is greyed out' }
+        Invoke-Control $start
+        Write-Host "  Start pressed"
+        $last = ''
+        $moved = $false
+        $deadline = (Get-Date).AddSeconds($InstallTimeoutSec)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 700
+            $s = Read-Status $win
+            $line = "$($s.Text) $($s.Pct)".Trim()
+            if ($line -ne $last) { Write-Host "  sideloadly: $line"; $last = $line }
+            if ($s.Text -ne $before -or $s.Pct -ne '100%') { $moved = $true }
+            $m = @(Get-Modals $p.Id)
+            if ($m.Count) {
+                $shot = Join-Path $env:TEMP 'sideloadly-dialog.png'
+                Save-Screenshot -Path $shot -Hwnd $m[0].Hwnd
+                $KeepOpen = $true   # leave the dialog for a human
+                throw "Sideloadly opened a dialog: '$($m[0].Title)' (Sideloadly left open; screenshot $shot)"
+            }
+            if ($moved -and $s.Text -match '^Done\.?$') {
+                Write-Host "INSTALLED build $($r.number)-$sha on $device"
+                return
+            }
+            if ($moved -and $s.Text -match '(?i)error|fail|guru meditation|exception|unable|denied') {
+                # The phone's Wi-Fi link can drop mid-copy (AFC_E_MUX_ERROR, "Device disappeared?",
+            # 2026-11-28 build 43): wait for it to come back and press Start once more.
+            if ($attempt -lt 2 -and $s.Text -match '(?i)MUX_ERROR|NO_DEVICE|disappeared|lost connection|timed out') {
+                Write-Host "  the phone dropped off ($($s.Text)); waiting for it and trying once more"
+                Start-Sleep -Seconds 5
+                continue attempts
+            }
             throw "Sideloadly: $($s.Text)"
+            }
         }
+        throw "no 'Done.' after $InstallTimeoutSec s; last status: $last"
     }
-    throw "no 'Done.' after $InstallTimeoutSec s; last status: $last"
 } finally {
+    if ($p -and -not $KeepOpen -and (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) {
+        Close-Sideloadly $p.Id
+        Write-Host "  closed Sideloadly"
+    }
     & $badge Green | Out-Null
 }

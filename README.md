@@ -11,7 +11,7 @@ The design notes live in the artwork's own repo (`art-studio/installations/ar/`)
 | `ios/` | Native iPhone app (Swift + RealityKit). **STREET**: a site overlay placed by location (SITE file, NUDGE), the chakra caterpillar (GO / STOP), a figure that follows your path, the beating heart. **BODY**: a figure copies the person in front of the camera. A glTF character can dress the figure. LOOK / LIVE send the view to the studio over Wi-Fi. |
 | `ios/project.yml` | XcodeGen spec. The Xcode project is generated in CI, never committed. |
 | `world.json` | Shared world description (sphere locations, colour, pulse) for every client. Locations are placeholders. |
-| `tools/` | `look_server.py` (studio receiver for LOOK / LIVE) and `look_wait.py`. |
+| `tools/` | `look_server.py` (studio receiver for LOOK / LIVE) and `look_wait.py`. `install_build.ps1`: newest green build of a branch → Downloads → installed through Sideloadly over Wi-Fi (or USB), no dragging. `phone_photos.py`: newest photos off the phone over Wi-Fi into `field-tests/` (never pushed), HEIC also as JPG. |
 | `.github/workflows/ios-build.yml` | Builds an **unsigned** `.ipa` on a GitHub-hosted Mac (free for public repos). |
 
 Planned: `web/` (GPS probe for iPhone Safari), `server/` (shared room so phones see the same beat).
